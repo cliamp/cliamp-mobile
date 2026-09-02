@@ -484,7 +484,23 @@ private fun PlaylistList(
     Column(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
             val pinnedCount = smart.size + pinnedPlaylists.size
-            item { SectionLabel("pinned — $pinnedCount") }
+            item {
+                SectionLabel("pinned — $pinnedCount") {
+                    if (!creating) {
+                        Box(
+                            Modifier
+                                .size(34.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(if (p.dark) p.keyFace else p.ground)
+                                .border(1.dp, p.keyBorder, RoundedCornerShape(6.dp))
+                                .clickable(onClick = onBeginCreate),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(CliampIcons.Plus, "new playlist", Modifier.size(16.dp), tint = p.accent)
+                        }
+                    }
+                }
+            }
             items(smart, key = { it.key }) { sp ->
                 SmartPlaylistRow(sp = sp, onOpen = { onOpenSmart(sp) }, context = context)
             }
@@ -546,11 +562,6 @@ private fun PlaylistList(
                 }
             }
             item { Spacer(Modifier.height(20.dp)) }
-            item {
-                if (!creating) {
-                    NewPlaylistCard(onClick = onBeginCreate)
-                }
-            }
         }
         Spacer(Modifier.height(8.dp))
     }
@@ -745,21 +756,6 @@ private fun InlineNameField(
             onBackspace = { text = text.dropLast(1) },
             onReturn = { onDone(text) },
         )
-    }
-}
-
-@Composable
-private fun NewPlaylistCard(onClick: () -> Unit) {
-    val p = LocalPalette.current
-    Box(
-        Modifier.fillMaxWidth().padding(Gutter).clip(RoundedCornerShape(8.dp)).background(p.panel)
-            .border(1.dp, p.hairlineRegion, RoundedCornerShape(8.dp)).clickable(onClick = onClick)
-            .padding(15.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Icon(CliampIcons.Plus, "new playlist", Modifier.size(14.dp), tint = p.accent)
-            Mono("new playlist", CliampType.chip, p.accent)
-        }
     }
 }
 
