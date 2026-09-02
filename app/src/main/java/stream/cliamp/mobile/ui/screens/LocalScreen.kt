@@ -93,6 +93,7 @@ fun LocalScreen(
 
     var pane by remember { mutableStateOf(LocalPane.Songs) }
     var query by remember { mutableStateOf("") }
+    val searchFocus = remember { FocusRequester() }
     var openSlug by remember { mutableStateOf<String?>(null) }
     var creatingName by remember { mutableStateOf(false) }
     var renamingSlug by remember { mutableStateOf<String?>(null) }
@@ -169,12 +170,30 @@ fun LocalScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Mono("▸ ", CliampType.chip, p.inkTertiary)
-                Mono(
-                    if (query.isBlank()) "search songs, artists, albums" else query,
-                    CliampType.rowPrimary,
-                    if (query.isBlank()) p.inkFaint else p.ink,
-                    maxLines = 1,
-                )
+                Box(Modifier.weight(1f)) {
+                    BasicTextField(
+                        value = query,
+                        onValueChange = { query = it.take(48) },
+                        modifier = Modifier.fillMaxWidth().focusRequester(searchFocus),
+                        textStyle = CliampType.rowPrimary.copy(color = p.ink),
+                        cursorBrush = SolidColor(p.accent),
+                        singleLine = true,
+                        decorationBox = { inner ->
+                            Box {
+                                if (query.isBlank()) Mono("search songs, artists, albums", CliampType.rowPrimary, p.inkFaint)
+                                inner()
+                            }
+                        },
+                    )
+                }
+                if (query.isNotBlank()) {
+                    Icon(
+                        CliampIcons.Xmark, "clear search",
+                        Modifier.size(14.dp).clip(RoundedCornerShape(4.dp)).clickable { query = "" }
+                            .padding(2.dp),
+                        tint = p.inkTertiary,
+                    )
+                }
             }
         }
 
@@ -205,7 +224,8 @@ fun LocalScreen(
                     onToggleFavorite = onToggleFavorite,
                 )
                 pane == LocalPane.Playlists -> PlaylistList(
-                    playlists = allPlaylists,
+                    playlists = filterPlaylists(allPlaylists, query),
+                    query = query,
                     songs = songs,
                     creating = creatingName,
                     renamingSlug = renamingSlug,
@@ -241,6 +261,12 @@ private fun filterSongs(songs: List<Station>, q: String): List<Station> {
             s.artist.lowercase().contains(needle) ||
             s.album.lowercase().contains(needle)
     }
+}
+
+private fun filterPlaylists(playlists: List<PlaylistStore.Playlist>, q: String): List<PlaylistStore.Playlist> {
+    val needle = q.trim().lowercase()
+    if (needle.isEmpty()) return playlists
+    return playlists.filter { it.station.name.lowercase().contains(needle) }
 }
 
 @Composable
@@ -359,6 +385,7 @@ private fun SongRow(
 @Composable
 private fun PlaylistList(
     playlists: List<PlaylistStore.Playlist>,
+    query: String,
     songs: List<Station>,
     creating: Boolean,
     renamingSlug: String?,
@@ -377,7 +404,10 @@ private fun PlaylistList(
         LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
             if (playlists.isEmpty() && !creating) {
                 item {
-                    CenterNote("no playlists yet — make one and add your songs", p.inkFaint)
+                    CenterNote(
+                        if (query.isNotBlank()) "no playlists match the search" else "no playlists yet — make one and add your songs",
+                        p.inkFaint,
+                    )
                 }
             } else if (playlists.isNotEmpty()) {
                 item { SectionLabel("playlists — ${playlists.size}") }

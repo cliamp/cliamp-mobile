@@ -130,6 +130,7 @@ object CliampIcons {
     val Plus = solid(14f, 14f, rect(6f, 0f, 2f, 14f), rect(0f, 6f, 14f, 2f))
     val Minus = solid(12f, 12f, rect(0f, 5f, 12f, 2f))
     val Check = stroked(13f, 13f, 2.2f, "M1.5 7l3.2 3.2L11.5 3")
+    val Xmark = stroked(12f, 12f, 1.8f, "M2 2l8 8M10 2l-8 8")
     val CaretDown = solid(10f, 10f, "M0 2h10L5 8z")
     val CaretRight = solid(10f, 10f, "M2 0v10l6-5z")
     val Download = stroked(16f, 16f, 1.6f, "M8 1v9", "M4.5 6.5L8 10l3.5-3.5", "M1.5 13.5h13")
