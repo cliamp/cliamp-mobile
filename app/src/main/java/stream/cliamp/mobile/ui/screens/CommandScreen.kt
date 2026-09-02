@@ -51,6 +51,9 @@ import stream.cliamp.mobile.data.StationSource
 import stream.cliamp.mobile.playback.PlaybackBus
 import stream.cliamp.mobile.ui.components.Chip
 import stream.cliamp.mobile.ui.components.CliampIcons
+import stream.cliamp.mobile.ui.components.CmdCursor
+import stream.cliamp.mobile.ui.components.CmdKeyboard
+import stream.cliamp.mobile.ui.components.CmdKeyboardMode
 import stream.cliamp.mobile.ui.components.Gutter
 import stream.cliamp.mobile.ui.components.HairlineDivider
 import stream.cliamp.mobile.ui.components.ListRow
@@ -198,7 +201,7 @@ fun CommandScreen(
                     p.ink,
                     maxLines = 1,
                 )
-                BlinkingCursor()
+CmdCursor()
                 Spacer(Modifier.weight(1f))
                 Mono(
                     if (query.isBlank()) "type to search" else "$total hits",
@@ -298,124 +301,14 @@ fun CommandScreen(
             item { Spacer(Modifier.height(12.dp)) }
         }
 
-        Keyboard(
+        CmdKeyboard(
             shift = shift,
+            mode = CmdKeyboardMode.Cmd,
             onKey = { c -> query += if (shift) c.uppercase() else c; shift = false },
             onShift = { shift = !shift },
             onBackspace = { query = query.dropLast(1) },
             onColon = { query = if (query.startsWith(":")) query else ":$query" },
-            onRun = { run(query) },
+            onReturn = { run(query) },
         )
-    }
-}
-
-@Composable
-private fun BlinkingCursor() {
-    val p = LocalPalette.current
-    val t = rememberInfiniteTransition(label = "cursor")
-    val a by t.animateFloat(
-        initialValue = 1f, targetValue = 0f,
-        animationSpec = infiniteRepeatable(tween(560), RepeatMode.Reverse),
-        label = "cursorAlpha",
-    )
-    Box(
-        Modifier
-            .padding(start = 2.dp)
-            .size(width = 10.dp, height = 18.dp)
-            .alpha(if (a > 0.5f) 1f else 0f)
-            .background(p.accent)
-    )
-}
-
-private val rows = listOf(
-    "qwertyuiop".toList(),
-    "asdfghjkl".toList(),
-    "zxcvbnm".toList(),
-)
-
-@Composable
-private fun Keyboard(
-    shift: Boolean,
-    onKey: (String) -> Unit,
-    onShift: () -> Unit,
-    onBackspace: () -> Unit,
-    onColon: () -> Unit,
-    onRun: () -> Unit,
-) {
-    val p = LocalPalette.current
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .background(if (p.dark) p.panel else p.panel)
-            .padding(horizontal = 6.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        rows.forEachIndexed { i, row ->
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
-            ) {
-                if (i == 2) {
-                    Cap("⇧", Modifier.weight(1.4f), active = shift, onClick = onShift)
-                }
-                row.forEach { c ->
-                    Cap(
-                        if (shift) c.uppercase() else c.toString(),
-                        Modifier.weight(1f),
-                        onClick = { onKey(c.toString()) },
-                    )
-                }
-                if (i == 2) {
-                    Cap("⌫", Modifier.weight(1.4f), onClick = onBackspace)
-                }
-            }
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-            Cap(":cmd", Modifier.weight(1.6f), onClick = onColon)
-            Cap("space", Modifier.weight(3f), onClick = { onKey(" ") })
-            Cap("-", Modifier.weight(1f), onClick = { onKey("-") })
-            Cap("RUN ⏎", Modifier.weight(2f), filled = true, onClick = onRun)
-        }
-        Spacer(Modifier.height(6.dp))
-    }
-}
-
-@Composable
-private fun Cap(
-    label: String,
-    modifier: Modifier = Modifier,
-    filled: Boolean = false,
-    active: Boolean = false,
-    onClick: () -> Unit,
-) {
-    val p = LocalPalette.current
-    val hf = LocalHapticFeedback.current
-    val hapticsOn = LocalHapticsEnabled.current
-    val face = when {
-        filled && p.dark -> p.accent
-        filled -> p.ink
-        active -> p.accentWash
-        p.dark -> p.keyFace
-        else -> p.ground
-    }
-    val fg = when {
-        filled && p.dark -> p.onAccent
-        filled -> p.ground
-        active -> p.accent
-        else -> p.ink
-    }
-    Box(
-        modifier
-            .height(42.dp)
-            .clip(RoundedCornerShape(6.dp))
-            .background(face)
-            .then(if (!filled) Modifier.border(1.dp, p.keyBorder, RoundedCornerShape(6.dp)) else Modifier)
-            .clickable {
-                if (hapticsOn) hf.performHapticFeedback(HapticFeedbackType.VirtualKey)
-                onClick()
-            },
-        contentAlignment = Alignment.Center,
-    ) {
-        Mono(label, CliampType.keyCap, fg, maxLines = 1)
     }
 }

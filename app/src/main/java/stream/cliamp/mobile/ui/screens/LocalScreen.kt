@@ -10,7 +10,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -38,10 +38,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -56,6 +53,9 @@ import stream.cliamp.mobile.data.Station
 import stream.cliamp.mobile.data.durationLabel
 import stream.cliamp.mobile.ui.components.Chip
 import stream.cliamp.mobile.ui.components.CliampIcons
+import stream.cliamp.mobile.ui.components.CmdCursor
+import stream.cliamp.mobile.ui.components.CmdKeyboard
+import stream.cliamp.mobile.ui.components.CmdKeyboardMode
 import stream.cliamp.mobile.ui.components.Gutter
 import stream.cliamp.mobile.ui.components.HairlineDivider
 import stream.cliamp.mobile.ui.components.IconLabelButton
@@ -107,7 +107,8 @@ fun LocalScreen(
 
     var pane by remember { mutableStateOf(LocalPane.Songs) }
     var query by remember { mutableStateOf("") }
-    val searchFocus = remember { FocusRequester() }
+    var searchShift by remember { mutableStateOf(false) }
+    var searchOpen by remember { mutableStateOf(false) }
     var openSlug by remember { mutableStateOf<String?>(null) }
     var openSmart by remember { mutableStateOf<SmartKind?>(null) }
     var creatingName by remember { mutableStateOf(false) }
@@ -164,7 +165,8 @@ fun LocalScreen(
         }
     }
 
-    Column(Modifier.fillMaxSize().background(p.ground)) {
+    Box(Modifier.fillMaxSize().background(p.ground)) {
+    Column(Modifier.fillMaxSize()) {
         ScreenHeader {
             Row(
                 Modifier.fillMaxWidth().padding(start = Gutter, end = Gutter, top = 8.dp, bottom = 4.dp),
@@ -209,30 +211,27 @@ fun LocalScreen(
                 }
             }
             Row(
-                Modifier.fillMaxWidth().padding(start = Gutter, end = Gutter, bottom = 6.dp),
+                Modifier.fillMaxWidth().padding(start = Gutter, end = Gutter, bottom = 6.dp)
+                    .clip(RoundedCornerShape(4.dp)).clickable { searchOpen = true },
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Mono("▸ ", CliampType.chip, p.inkTertiary)
-                Box(Modifier.weight(1f)) {
-                    BasicTextField(
-                        value = query,
-                        onValueChange = { query = it.take(48) },
-                        modifier = Modifier.fillMaxWidth().focusRequester(searchFocus),
-                        textStyle = CliampType.rowPrimary.copy(color = p.ink),
-                        cursorBrush = SolidColor(p.accent),
-                        singleLine = true,
-                        decorationBox = { inner ->
-                            Box {
-                                if (query.isBlank()) Mono("search songs, artists, albums", CliampType.rowPrimary, p.inkFaint)
-                                inner()
-                            }
-                        },
-                    )
+                Row(
+                    Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (query.isBlank()) {
+                        Mono("search songs, artists, albums", CliampType.rowPrimary, p.inkFaint)
+                    } else {
+                        Mono(query, CliampType.rowPrimary, p.ink, maxLines = 1)
+                    }
+                    if (searchOpen) CmdCursor()
                 }
                 if (query.isNotBlank()) {
                     Icon(
                         CliampIcons.Xmark, "clear search",
-                        Modifier.size(14.dp).clip(RoundedCornerShape(4.dp)).clickable { query = "" }
+                        Modifier.size(14.dp).clip(RoundedCornerShape(4.dp))
+                            .clickable { query = ""; searchOpen = true }
                             .padding(2.dp),
                         tint = p.inkTertiary,
                     )
@@ -301,6 +300,29 @@ fun LocalScreen(
                     onOpenSmart = { openSmart = it.kind },
                 )
             }
+        }
+        }
+
+        if (searchOpen) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .clickable(
+                        indication = null,
+                        interactionSource = remember { MutableInteractionSource() },
+                    ) { searchOpen = false }
+            )
+            CmdKeyboard(
+                modifier = Modifier.align(Alignment.BottomCenter),
+                shift = searchShift,
+                mode = CmdKeyboardMode.Text,
+                onKey = { c ->
+                    query = (query + (if (searchShift) c.uppercase() else c)).take(48)
+                },
+                onShift = { searchShift = !searchShift },
+                onBackspace = { query = query.dropLast(1) },
+                onReturn = { searchShift = false; searchOpen = false },
+            )
         }
     }
 }
@@ -694,36 +716,35 @@ private fun InlineNameField(
 ) {
     val p = LocalPalette.current
     var text by remember { mutableStateOf(initial) }
-    val focusRequester = remember { FocusRequester() }
-    val scope = rememberCoroutineScope()
-    LaunchedEffect(Unit) { focusRequester.requestFocus() }
-    Row(
-        Modifier.fillMaxWidth().padding(Gutter)
-            .clip(RoundedCornerShape(6.dp)).border(1.dp, p.chipBorder, RoundedCornerShape(6.dp))
-            .background(p.panel).padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        BasicTextField(
-            value = text,
-            onValueChange = { text = it.take(48) },
-            modifier = Modifier.weight(1f).focusRequester(focusRequester),
-            textStyle = CliampType.rowPrimary.copy(color = p.ink),
-            cursorBrush = SolidColor(p.accent),
-            singleLine = true,
-            decorationBox = { inner ->
-                Box {
-                    if (text.isEmpty()) Mono(placeholder, CliampType.rowPrimary, p.inkFaint)
-                    inner()
-                }
-            },
+    var shift by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth().padding(Gutter)
+                .clip(RoundedCornerShape(6.dp)).border(1.dp, p.chipBorder, RoundedCornerShape(6.dp))
+                .background(p.panel).padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                if (text.isEmpty()) Mono(placeholder, CliampType.rowPrimary, p.inkFaint)
+                else Mono(text, CliampType.rowPrimary, p.ink, maxLines = 1)
+                CmdCursor()
+            }
+            Mono("SAVE", CliampType.tabLabel, p.accent,
+                Modifier.clip(RoundedCornerShape(4.dp)).background(p.accent.copy(alpha = 0.14f))
+                    .clickable { onDone(text) }.padding(horizontal = 9.dp, vertical = 7.dp))
+            Mono("CANCEL", CliampType.tabLabel, p.inkTertiary,
+                Modifier.clip(RoundedCornerShape(4.dp)).border(1.dp, p.chipBorder, RoundedCornerShape(4.dp))
+                    .clickable(onClick = onCancel).padding(horizontal = 9.dp, vertical = 7.dp))
+        }
+        CmdKeyboard(
+            shift = shift,
+            mode = CmdKeyboardMode.Text,
+            onKey = { c -> text = (text + (if (shift) c.uppercase() else c)).take(48) },
+            onShift = { shift = !shift },
+            onBackspace = { text = text.dropLast(1) },
+            onReturn = { onDone(text) },
         )
-        Mono("SAVE", CliampType.tabLabel, p.accent,
-            Modifier.clip(RoundedCornerShape(4.dp)).background(p.accent.copy(alpha = 0.14f))
-                .clickable { onDone(text) }.padding(horizontal = 9.dp, vertical = 7.dp))
-        Mono("CANCEL", CliampType.tabLabel, p.inkTertiary,
-            Modifier.clip(RoundedCornerShape(4.dp)).border(1.dp, p.chipBorder, RoundedCornerShape(4.dp))
-                .clickable(onClick = onCancel).padding(horizontal = 9.dp, vertical = 7.dp))
     }
 }
 
