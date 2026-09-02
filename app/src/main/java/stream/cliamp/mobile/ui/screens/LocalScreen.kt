@@ -67,13 +67,11 @@ import stream.cliamp.mobile.ui.theme.CliampType
 import stream.cliamp.mobile.ui.theme.LocalPalette
 import stream.cliamp.mobile.ui.theme.Mono
 
-private enum class LocalPane(val label: String) {
-    Playlists("playlists"), Songs("all local songs")
-}
-
-/** The two pinned, auto-populated smart playlists on the PLAYLISTS tab. */
+/** The pinned, auto-populated smart playlists on the library tab. */
 private enum class SmartKind(val label: String) {
-    Favorites("favorites"), RecentlyPlayed("recently played");
+    LocalSongs("local songs"),
+    Favorites("favorites"),
+    RecentlyPlayed("recently played");
 
     val key: String get() = "smart:$name"
 }
@@ -106,12 +104,12 @@ fun LocalScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var pane by remember { mutableStateOf(LocalPane.Playlists) }
     var query by remember { mutableStateOf("") }
     var searchShift by remember { mutableStateOf(false) }
     var searchOpen by remember { mutableStateOf(false) }
     var openSlug by remember { mutableStateOf<String?>(null) }
     var openSmart by remember { mutableStateOf<SmartKind?>(null) }
+    var addingTo by remember { mutableStateOf<String?>(null) }
     var creatingName by remember { mutableStateOf(false) }
     var renamingSlug by remember { mutableStateOf<String?>(null) }
 
@@ -150,19 +148,22 @@ fun LocalScreen(
     val playAndOpen: (Station, List<Station>) -> Unit = { s, list -> onPlay(s, list); onOpenPlayer() }
 
     // Pinned smart playlists — auto-populated from global state, non-removable.
+    // The "local songs" row is always at the very top, above everything else.
     val smartPlaylists = listOf(
+        SmartPlaylist(SmartKind.LocalSongs, filtered),
         SmartPlaylist(SmartKind.Favorites, favorites),
         SmartPlaylist(SmartKind.RecentlyPlayed, recent),
     )
     val openSmartPlaylist = smartPlaylists.firstOrNull { it.kind == openSmart }
     val paneVisible = openSmartPlaylist == null && showing == null
 
-    val canGoBack = showing != null || openSmartPlaylist != null || pane == LocalPane.Songs
+    val canGoBack = showing != null || openSmartPlaylist != null || addingTo != null
     BackHandler(enabled = canGoBack) {
         when {
+            addingTo != null -> addingTo = null
             showing != null -> openSlug = null
             openSmartPlaylist != null -> openSmart = null
-            else -> pane = LocalPane.Playlists
+            else -> {}
         }
     }
 
@@ -191,7 +192,7 @@ fun LocalScreen(
                     horizontalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
                     Chip("‹ back", selected = false, onClick = { openSlug = null })
-                    Chip("add songs", selected = false, onClick = { pane = LocalPane.Songs })
+                    Chip("add songs", selected = false, onClick = { addingTo = showing.station.slug })
                     Chip("set cover", selected = false, onClick = { coverLauncher.launch("image/*") })
                 }
             } else if (openSmartPlaylist != null) {
@@ -201,14 +202,6 @@ fun LocalScreen(
                     horizontalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
                     Chip("‹ back", selected = false, onClick = { openSmart = null })
-                }
-            } else {
-                Row(
-                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
-                        .padding(start = Gutter, end = Gutter, top = 8.dp, bottom = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(7.dp),
-                ) {
-                    LocalPane.entries.forEach { e -> Chip(e.label, pane == e, onClick = { pane = e }) }
                 }
             }
             Row(
@@ -251,6 +244,7 @@ fun LocalScreen(
                     playing = playing,
                     onPlay = playAndOpen,
                     onToggleFavorite = onToggleFavorite,
+                    onAddToQueue = onAddToQueue,
                     favorites = favorites.map { it.url }.toSet(),
                 )
                 showing != null -> PlaylistDetailShown(
@@ -263,19 +257,10 @@ fun LocalScreen(
                     onPlay = playAndOpen,
                     onRemove = { id -> scope.launch { playlists.removeSong(showing.station.slug, id) } },
                     onAdd = { id -> scope.launch { playlists.addSong(showing.station.slug, id) } },
-                    adding = pane == LocalPane.Songs,
-                    doneAdding = { pane = LocalPane.Playlists },
+                    adding = addingTo != null,
+                    doneAdding = { addingTo = null },
                 )
-                pane == LocalPane.Songs -> SongList(
-                    songs = filtered,
-                    favorites = favorites,
-                    current = current,
-                    playing = playing,
-                    onPlay = playAndOpen,
-                    onToggleFavorite = onToggleFavorite,
-                    onAddToQueue = onAddToQueue,
-                )
-                pane == LocalPane.Playlists -> PlaylistList(
+                else -> PlaylistList(
                     smart = smartPlaylists,
                     pinnedPlaylists = pinnedPlaylists,
                     playlists = unpinnedPlaylists,
@@ -296,7 +281,7 @@ fun LocalScreen(
                         if (renamingSlug == slug) renamingSlug = null
                         if (openSlug == slug) openSlug = null
                     },
-                    onAddSongs = { slug -> openSlug = slug; pane = LocalPane.Songs },
+                    onAddSongs = { slug -> openSlug = slug; addingTo = slug },
                     onPin = { slug, pinned -> scope.launch { playlists.setPinned(slug, pinned) } },
                     onOpen = { openSlug = it.station.slug },
                     onOpenSmart = { openSmart = it.kind },
@@ -368,105 +353,6 @@ private fun PermissionPrompt(onGrant: () -> Unit) {
         IconLabelButton(CliampIcons.PlayRow, "grant access", onClick = onGrant)
         Spacer(Modifier.height(12.dp))
         HairlineDivider()
-    }
-}
-
-@Composable
-private fun SongList(
-    songs: List<Station>,
-    favorites: List<Station>,
-    current: Station?,
-    playing: Boolean,
-    onPlay: (Station, List<Station>) -> Unit,
-    onToggleFavorite: (Station) -> Unit,
-    onAddToQueue: (Station) -> Unit,
-) {
-    val p = LocalPalette.current
-    if (songs.isEmpty()) {
-        CenterNote("no songs — tune the radio or drop files on the phone", p.inkFaint)
-        return
-    }
-    LazyColumn(Modifier.fillMaxSize()) {
-        item { SectionLabel("all music — ${songs.size}") }
-        items(songs, key = { it.id }) { s ->
-            SongRow(
-                station = s,
-                active = current?.url == s.url,
-                playing = playing && current?.url == s.url,
-                favorite = favorites.any { it.url == s.url },
-                onPlay = { onPlay(s, songs) },
-                onToggleFavorite = { onToggleFavorite(s) },
-                onAddToQueue = { onAddToQueue(s) },
-            )
-        }
-        item { Spacer(Modifier.height(20.dp)) }
-    }
-}
-
-@Composable
-private fun SongRow(
-    station: Station,
-    active: Boolean,
-    playing: Boolean,
-    favorite: Boolean,
-    onPlay: () -> Unit,
-    onToggleFavorite: () -> Unit,
-    onAddToQueue: () -> Unit,
-) {
-    val p = LocalPalette.current
-    val context = LocalContext.current
-    var art by remember(station.id) { mutableStateOf<ImageBitmap?>(null) }
-    LaunchedEffect(station.id, station.cover) {
-        art = LocalArt.bitmapFor(station.cover, context.contentResolver)?.asImageBitmap()
-    }
-    ListRow(
-        onClick = onPlay,
-        verticalPadding = 9.dp,
-        leading = {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier.size(40.dp).clip(RoundedCornerShape(4.dp))
-                        .then(if (art == null) Modifier.border(1.dp, p.chipBorder, RoundedCornerShape(4.dp)) else Modifier),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    if (art != null) {
-                        Image(art!!, station.name, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                    } else {
-                        Box(Modifier.fillMaxSize().background(p.panel), contentAlignment = Alignment.Center) {
-                            Icon(if (playing && active) CliampIcons.Pause else CliampIcons.PlayRow, null,
-                                Modifier.size(12.dp), tint = p.inkTertiary)
-                        }
-                    }
-                }
-            }
-        },
-        trailing = {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Mono(durationLabel(station.durationMs), CliampType.meta, p.inkFaint)
-                Icon(
-                    if (favorite) CliampIcons.StarFilled else CliampIcons.Star,
-                    "favourite",
-                    Modifier.size(15.dp).clickable(onClick = onToggleFavorite),
-                    tint = if (favorite) p.accent else p.inkFaint,
-                )
-                Icon(
-                    CliampIcons.Plus,
-                    "add to queue",
-                    Modifier.size(16.dp).clickable(onClick = onAddToQueue),
-                    tint = p.inkFaint,
-                )
-            }
-        },
-    ) {
-        Mono(station.name, if (active) CliampType.rowPrimaryMedium else CliampType.rowPrimary,
-            if (active) p.accent else p.ink, maxLines = 1)
-        Mono(
-            buildList {
-                if (station.artist.isNotBlank()) add(station.artist)
-                if (station.album.isNotBlank()) add(station.album)
-            }.joinToString(" · ").ifBlank { durationLabel(station.durationMs) },
-            CliampType.rowSecondary, p.inkTertiary, maxLines = 1,
-        )
     }
 }
 
@@ -645,7 +531,11 @@ private fun SmartPlaylistRow(
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
-                    if (sp.kind == SmartKind.Favorites) CliampIcons.Star else CliampIcons.Clock,
+                    when (sp.kind) {
+                        SmartKind.LocalSongs -> CliampIcons.MusicNote
+                        SmartKind.Favorites -> CliampIcons.Star
+                        SmartKind.RecentlyPlayed -> CliampIcons.Clock
+                    },
                     sp.label,
                     Modifier.size(16.dp),
                     tint = p.accent,
@@ -888,6 +778,7 @@ private fun SmartPlaylistDetail(
     playing: Boolean,
     onPlay: (Station, List<Station>) -> Unit,
     onToggleFavorite: (Station) -> Unit,
+    onAddToQueue: (Station) -> Unit,
     favorites: Set<String>,
 ) {
     val p = LocalPalette.current
@@ -898,6 +789,7 @@ private fun SmartPlaylistDetail(
                 Box(Modifier.fillMaxWidth().padding(vertical = 24.dp), contentAlignment = Alignment.Center) {
                     Mono(
                         when (pl.kind) {
+                            SmartKind.LocalSongs -> "no songs on the phone yet"
                             SmartKind.Favorites -> "no favourites yet"
                             SmartKind.RecentlyPlayed -> "nothing played recently"
                         },
@@ -927,12 +819,22 @@ private fun SmartPlaylistDetail(
                         }
                     },
                     trailing = {
-                        Icon(
-                            if (s.url in favorites) CliampIcons.StarFilled else CliampIcons.Star,
-                            "favourite",
-                            Modifier.size(15.dp).clickable { onToggleFavorite(s) },
-                            tint = if (s.url in favorites) p.accent else p.inkFaint,
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Icon(
+                                if (s.url in favorites) CliampIcons.StarFilled else CliampIcons.Star,
+                                "favourite",
+                                Modifier.size(15.dp).clickable { onToggleFavorite(s) },
+                                tint = if (s.url in favorites) p.accent else p.inkFaint,
+                            )
+                            if (pl.kind == SmartKind.LocalSongs) {
+                                Icon(
+                                    CliampIcons.Plus,
+                                    "add to queue",
+                                    Modifier.size(16.dp).clickable { onAddToQueue(s) },
+                                    tint = p.inkFaint,
+                                )
+                            }
+                        }
                     },
                 ) {
                     Mono(s.name, CliampType.rowPrimary, if (current?.url == s.url) p.accent else p.ink, maxLines = 1)

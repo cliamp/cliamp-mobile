@@ -92,6 +92,7 @@ object CliampIcons {
     val PlayRow = solid(14f, 14f, "M1 1l12 6-12 6z")
     val PlayTab = solid(18f, 18f, "M2 1l14 8-14 8z")
     val PlayWide = solid(12f, 13f, "M0 0l12 6.5L0 13z")
+    val MusicNote = solid(16f, 16f, "M6 2.5L14 1v9.5", "M6 2.5L14 1", "M6 14a2.4 2.4 0 11-2.4-2.4c.9 0 1.6.4 2 1z", "M14 11a2.4 2.4 0 11-2.4-2.4c.9 0 1.6.4 2 1z")
 
     val Prev = solid(22f, 18f, "M12 9L22 1v16z", "M2 9L12 1v16z", rect(0f, 1f, 2.4f, 16f))
     val Next = solid(22f, 18f, "M10 9L0 17V1z", "M20 9L10 17V1z", rect(19.6f, 1f, 2.4f, 16f))
