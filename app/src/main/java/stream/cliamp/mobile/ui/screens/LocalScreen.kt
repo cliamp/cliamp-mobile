@@ -71,6 +71,19 @@ private enum class LocalPane(val label: String) {
     Songs("all local songs"), Playlists("playlists")
 }
 
+/** The two pinned, auto-populated smart playlists on the PLAYLISTS tab. */
+private enum class SmartKind(val label: String) {
+    Favorites("favorites"), RecentlyPlayed("recently played");
+
+    val key: String get() = "smart:$name"
+}
+
+/** A derived smart playlist: a label plus its current member stations. */
+private class SmartPlaylist(val kind: SmartKind, val stations: List<Station>) {
+    val label: String get() = kind.label
+    val key: String get() = kind.key
+}
+
 /**
  * The LIB tab's local half. Reads the phone's audio library via [LocalLibrary]
  * and lets the user play any song (through the normal Station pipeline, so
@@ -83,6 +96,7 @@ fun LocalScreen(
     current: Station?,
     playing: Boolean,
     favorites: List<Station>,
+    recent: List<Station>,
     onPlay: (Station, List<Station>) -> Unit,
     onToggleFavorite: (Station) -> Unit,
     onOpenPlayer: () -> Unit,
@@ -95,6 +109,7 @@ fun LocalScreen(
     var query by remember { mutableStateOf("") }
     val searchFocus = remember { FocusRequester() }
     var openSlug by remember { mutableStateOf<String?>(null) }
+    var openSmart by remember { mutableStateOf<SmartKind?>(null) }
     var creatingName by remember { mutableStateOf(false) }
     var renamingSlug by remember { mutableStateOf<String?>(null) }
 
@@ -128,10 +143,19 @@ fun LocalScreen(
     val showing = allPlaylists.firstOrNull { it.station.slug == openSlug }
     val playAndOpen: (Station, List<Station>) -> Unit = { s, list -> onPlay(s, list); onOpenPlayer() }
 
-    val canGoBack = showing != null || pane == LocalPane.Playlists
+    // Pinned smart playlists — auto-populated from global state, non-removable.
+    val smartPlaylists = listOf(
+        SmartPlaylist(SmartKind.Favorites, favorites),
+        SmartPlaylist(SmartKind.RecentlyPlayed, recent),
+    )
+    val openSmartPlaylist = smartPlaylists.firstOrNull { it.kind == openSmart }
+    val paneVisible = openSmartPlaylist == null && showing == null
+
+    val canGoBack = showing != null || openSmartPlaylist != null || pane == LocalPane.Playlists
     BackHandler(enabled = canGoBack) {
         when {
             showing != null -> openSlug = null
+            openSmartPlaylist != null -> openSmart = null
             else -> pane = LocalPane.Songs
         }
     }
@@ -143,7 +167,14 @@ fun LocalScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Mono(if (showing != null) showing.station.name else "library", CliampType.screenTitle, p.ink, maxLines = 1)
+                Mono(
+                    when {
+                        showing != null -> showing.station.name
+                        openSmartPlaylist != null -> openSmartPlaylist.label
+                        else -> "library"
+                    },
+                    CliampType.screenTitle, p.ink, maxLines = 1,
+                )
             }
             if (showing != null) {
                 // playlist detail sub-header
@@ -155,6 +186,14 @@ fun LocalScreen(
                     Chip("‹ back", selected = false, onClick = { openSlug = null })
                     Chip("add songs", selected = false, onClick = { pane = LocalPane.Songs })
                     Chip("set cover", selected = false, onClick = { coverLauncher.launch("image/*") })
+                }
+            } else if (openSmartPlaylist != null) {
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                        .padding(start = Gutter, end = Gutter, top = 8.dp, bottom = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                ) {
+                    Chip("‹ back", selected = false, onClick = { openSmart = null })
                 }
             } else {
                 Row(
@@ -202,6 +241,14 @@ fun LocalScreen(
                 !haveAudio -> PermissionPrompt(onGrant = { permissionLauncher.launch(audioPerm) })
                 loading && songs.isEmpty() -> CenterNote("reading the library…", p.inkFaint)
                 libError != null && songs.isEmpty() -> CenterNote(libError!!, p.destructiveInk)
+                openSmartPlaylist != null -> SmartPlaylistDetail(
+                    pl = openSmartPlaylist,
+                    current = current,
+                    playing = playing,
+                    onPlay = playAndOpen,
+                    onToggleFavorite = onToggleFavorite,
+                    favorites = favorites.map { it.url }.toSet(),
+                )
                 showing != null -> PlaylistDetailShown(
                     playlist = showing,
                     songIds = showing.songIds,
@@ -224,6 +271,7 @@ fun LocalScreen(
                     onToggleFavorite = onToggleFavorite,
                 )
                 pane == LocalPane.Playlists -> PlaylistList(
+                    smart = smartPlaylists,
                     playlists = filterPlaylists(allPlaylists, query),
                     query = query,
                     songs = songs,
@@ -244,6 +292,7 @@ fun LocalScreen(
                     },
                     onAddSongs = { slug -> openSlug = slug; pane = LocalPane.Songs },
                     onOpen = { openSlug = it.station.slug },
+                    onOpenSmart = { openSmart = it.kind },
                 )
             }
         }
@@ -384,6 +433,7 @@ private fun SongRow(
 
 @Composable
 private fun PlaylistList(
+    smart: List<SmartPlaylist>,
     playlists: List<PlaylistStore.Playlist>,
     query: String,
     songs: List<Station>,
@@ -397,20 +447,15 @@ private fun PlaylistList(
     onDelete: (String) -> Unit,
     onAddSongs: (String) -> Unit,
     onOpen: (PlaylistStore.Playlist) -> Unit,
+    onOpenSmart: (SmartPlaylist) -> Unit,
 ) {
     val p = LocalPalette.current
     val context = LocalContext.current
     Column(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
-            if (playlists.isEmpty() && !creating) {
-                item {
-                    CenterNote(
-                        if (query.isNotBlank()) "no playlists match the search" else "no playlists yet — make one and add your songs",
-                        p.inkFaint,
-                    )
-                }
-            } else if (playlists.isNotEmpty()) {
-                item { SectionLabel("playlists — ${playlists.size}") }
+            item { SectionLabel("pinned — ${smart.size}") }
+            items(smart, key = { it.key }) { sp ->
+                SmartPlaylistRow(sp = sp, onOpen = { onOpenSmart(sp) }, context = context)
             }
             if (creating) {
                 item {
@@ -421,6 +466,9 @@ private fun PlaylistList(
                         onCancel = onCancel,
                     )
                 }
+            }
+            if (playlists.isNotEmpty()) {
+                item { SectionLabel("playlists — ${playlists.size}") }
             }
             items(playlists, key = { it.station.slug }) { pl ->
                 if (pl.station.slug == renamingSlug) {
@@ -495,6 +543,48 @@ private fun PlaylistRow(
         Mono(pl.station.name, CliampType.rowPrimaryMedium, p.ink, maxLines = 1)
         Mono(
             pl.songIds.joinToString(" · ") { titleOf(it, songs) }.ifBlank { "empty playlist" },
+            CliampType.rowSecondary, p.inkTertiary, maxLines = 1,
+        )
+    }
+}
+
+/** A pinned, auto-populated smart playlist row — always present, not removable. */
+@Composable
+private fun SmartPlaylistRow(
+    sp: SmartPlaylist,
+    onOpen: () -> Unit,
+    context: android.content.Context,
+) {
+    val p = LocalPalette.current
+    ListRow(
+        onClick = onOpen,
+        verticalPadding = 9.dp,
+        leading = {
+            Box(
+                Modifier.size(44.dp).clip(RoundedCornerShape(5.dp))
+                    .border(1.dp, p.accent.copy(alpha = 0.5f), RoundedCornerShape(5.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    if (sp.kind == SmartKind.Favorites) CliampIcons.Star else CliampIcons.Clock,
+                    sp.label,
+                    Modifier.size(16.dp),
+                    tint = p.accent,
+                )
+            }
+        },
+        trailing = {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Mono("${sp.stations.size} items", CliampType.meta, p.inkFaint)
+                Icon(CliampIcons.CaretRight, "open", Modifier.size(11.dp), tint = p.inkTertiary)
+            }
+        },
+    ) {
+        Mono(sp.label, CliampType.rowPrimaryMedium, p.ink, maxLines = 1)
+        Mono(
+            sp.stations.joinToString(" · ") { it.name }.ifBlank {
+                if (sp.stations.isEmpty()) "nothing here yet" else ""
+            },
             CliampType.rowSecondary, p.inkTertiary, maxLines = 1,
         )
     }
@@ -710,6 +800,76 @@ private fun PlaylistDetailShown(
                             if (s.artist.isNotBlank()) add(s.artist)
                             if (s.album.isNotBlank()) add(s.album)
                         }.joinToString(" · ").ifBlank { durationLabel(s.durationMs) },
+                        CliampType.rowSecondary, p.inkTertiary, maxLines = 1,
+                    )
+                }
+            }
+        }
+        item { Spacer(Modifier.height(20.dp)) }
+    }
+}
+
+/** Detail view for a pinned smart playlist: every member station, local and radio. */
+@Composable
+private fun SmartPlaylistDetail(
+    pl: SmartPlaylist,
+    current: Station?,
+    playing: Boolean,
+    onPlay: (Station, List<Station>) -> Unit,
+    onToggleFavorite: (Station) -> Unit,
+    favorites: Set<String>,
+) {
+    val p = LocalPalette.current
+    val members = pl.stations
+    LazyColumn(Modifier.fillMaxSize()) {
+        if (members.isEmpty()) {
+            item {
+                Box(Modifier.fillMaxWidth().padding(vertical = 24.dp), contentAlignment = Alignment.Center) {
+                    Mono(
+                        when (pl.kind) {
+                            SmartKind.Favorites -> "no favourites yet"
+                            SmartKind.RecentlyPlayed -> "nothing played recently"
+                        },
+                        CliampType.rowSecondary, p.inkFaint,
+                    )
+                }
+            }
+        } else {
+            item { SectionLabel("${pl.label} — ${members.size}") }
+            items(members, key = { it.url }) { s ->
+                ListRow(
+                    onClick = { onPlay(s, members) },
+                    verticalPadding = 9.dp,
+                    leading = {
+                        Box(
+                            Modifier.size(28.dp).clip(RoundedCornerShape(4.dp))
+                                .then(if (current?.url == s.url) Modifier.background(p.accent)
+                                      else Modifier.border(1.dp, p.chipBorder, RoundedCornerShape(4.dp))),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                if (current?.url == s.url && playing) CliampIcons.Pause else CliampIcons.PlayRow,
+                                null,
+                                Modifier.size(if (current?.url == s.url && playing) 9.dp else 11.dp),
+                                tint = if (current?.url == s.url) p.onAccent else p.inkTertiary,
+                            )
+                        }
+                    },
+                    trailing = {
+                        Icon(
+                            if (s.url in favorites) CliampIcons.StarFilled else CliampIcons.Star,
+                            "favourite",
+                            Modifier.size(15.dp).clickable { onToggleFavorite(s) },
+                            tint = if (s.url in favorites) p.accent else p.inkFaint,
+                        )
+                    },
+                ) {
+                    Mono(s.name, CliampType.rowPrimary, if (current?.url == s.url) p.accent else p.ink, maxLines = 1)
+                    Mono(
+                        buildList {
+                            if (s.artist.isNotBlank()) add(s.artist)
+                            if (s.album.isNotBlank()) add(s.album)
+                        }.joinToString(" · ").ifBlank { s.meta },
                         CliampType.rowSecondary, p.inkTertiary, maxLines = 1,
                     )
                 }
