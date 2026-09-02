@@ -182,11 +182,9 @@ fun CliampRoot(
         }
         }
 
-        if (overlay == Overlay.None) {
-            QueueBar(
-                count = queue.size,
-                onOpen = { overlay = Overlay.Queue },
-            )
-        }
+        QueueBar(
+            count = queue.size,
+            onOpen = { overlay = Overlay.Queue },
+        )
     }
 }
