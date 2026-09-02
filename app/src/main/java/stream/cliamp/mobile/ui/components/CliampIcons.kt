@@ -123,22 +123,11 @@ object CliampIcons {
         addPath(addPathNodes("M${cx - 6.3f} $cy a 6.3 6.3 0 0 1 12.6 0"), stroke = SolidColor(Color.White), strokeLineWidth = 1.5f)
     }.build()
     /**
-     * A vinyl disc: outer groove ring, a sliver of the label, and the centre
-     * hole. Reads as "music library" at tab size and stays distinct from the
-     * queue's line-list and LIB's book-stack.
+     * A book-stack: two upright stroked books with a slanted volume on top.
+     * Reads as "library" at tab size and stays distinct from the queue's
+     * line-list and STATIONS' broadcast-signal.
      */
-    val PlaylistsTab = ImageVector.Builder(
-        defaultWidth = 18.dp, defaultHeight = 18.dp, viewportWidth = 18f, viewportHeight = 18f,
-    ).apply {
-        val groove = addPathNodes("M9 2a7 7 0 1 1 -0.001 0")
-        addPath(groove, stroke = SolidColor(Color.White), strokeLineWidth = 1.6f)
-        // label ring inside the grooves
-        addPath(addPathNodes("M9 5a4 4 0 1 1 -0.001 0"), fill = SolidColor(Color.White))
-        // centre hole
-        val hole = addPathNodes("M9 7.2a1.8 1.8 0 1 1 -0.001 0")
-        addPath(hole, fill = SolidColor(Color.White))
-        addPath(hole, stroke = SolidColor(Color(0xFF000000)), strokeLineWidth = 1f)
-    }.build()
+    val LibTab = stroked(18f, 18f, 1.7f, rect(1f, 1f, 5f, 16f), rect(8f, 1f, 5f, 16f), "M15 2l2 15")
     val QueueTabLines = stroked(18f, 18f, 1.7f, "M1 4h16M1 9h11M1 14h11")
     val QueueTabArrow = solid(18f, 18f, "M15 11l3 2-3 2z")
     val CmdTab = stroked(18f, 18f, 1.7f, rrect(0.9f, 1.9f, 16.2f, 14.2f, 2f), "M4.5 7l2.2 2.2L4.5 11.4M8.6 11.8h5")
