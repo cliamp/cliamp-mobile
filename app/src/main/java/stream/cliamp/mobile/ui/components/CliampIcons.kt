@@ -103,7 +103,25 @@ object CliampIcons {
     val Star = stroked(16f, 16f, 1.8f, "M8 1.5l1.9 4.2 4.6.5-3.4 3.1.9 4.5L8 11.6 4 13.8l.9-4.5L1.5 6.2l4.6-.5z")
     val StarFilled = solid(16f, 16f, "M8 1.5l1.9 4.2 4.6.5-3.4 3.1.9 4.5L8 11.6 4 13.8l.9-4.5L1.5 6.2l4.6-.5z")
 
-    val LibTab = stroked(18f, 18f, 1.7f, rect(1f, 1f, 5f, 16f), rect(8f, 1f, 5f, 16f), "M15 2l2 15")
+    /**
+     * A broadcast signal radiating from a transmitter: a small solid dot at the
+     * base of the mist plus three concentric, symmetric arcs. Reads immediately
+     * as "radio / stations" at tab size and sits cleanly beside the playlists
+     * vinyl disc and the queue line-list.
+     */
+    val StationsTab = ImageVector.Builder(
+        defaultWidth = 18.dp, defaultHeight = 18.dp, viewportWidth = 18f, viewportHeight = 18f,
+    ).apply {
+        val cx = 9f
+        val cy = 7.6f
+        // transmitter dot
+        val dot = addPathNodes("M$cx 6a1.6 1.6 0 1 1 -0.001 0")
+        addPath(dot, fill = SolidColor(Color.White))
+        // three concentric radiating arcs
+        addPath(addPathNodes("M${cx - 2.4f} $cy a 2.4 2.4 0 0 1 4.8 0"), stroke = SolidColor(Color.White), strokeLineWidth = 1.5f)
+        addPath(addPathNodes("M${cx - 4.3f} $cy a 4.3 4.3 0 0 1 8.6 0"), stroke = SolidColor(Color.White), strokeLineWidth = 1.5f)
+        addPath(addPathNodes("M${cx - 6.3f} $cy a 6.3 6.3 0 0 1 12.6 0"), stroke = SolidColor(Color.White), strokeLineWidth = 1.5f)
+    }.build()
     /**
      * A vinyl disc: outer groove ring, a sliver of the label, and the centre
      * hole. Reads as "music library" at tab size and stays distinct from the
