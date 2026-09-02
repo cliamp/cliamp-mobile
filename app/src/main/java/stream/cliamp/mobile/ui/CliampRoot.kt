@@ -29,6 +29,7 @@ import stream.cliamp.mobile.data.Station
 import stream.cliamp.mobile.playback.PlaybackBus
 import stream.cliamp.mobile.playback.PlayerConnection
 import stream.cliamp.mobile.ui.components.CliampTabBar
+import stream.cliamp.mobile.ui.components.QueueBar
 import stream.cliamp.mobile.ui.components.Tab
 import stream.cliamp.mobile.ui.screens.CommandScreen
 import stream.cliamp.mobile.ui.screens.LocalScreen
@@ -47,6 +48,7 @@ private sealed interface Overlay {
     data object Scope : Overlay
     data object Stats : Overlay
     data object Settings : Overlay
+    data object Queue : Overlay
 }
 
 @UnstableApi
@@ -70,6 +72,7 @@ fun CliampRoot(
     val favorites by prefs.favorites.collectAsState(initial = emptyList())
     val recent by prefs.history.collectAsState(initial = emptyList())
     val reconnect by PlaybackBus.reconnectAttempt.collectAsState()
+    val queue by player.queue.collectAsState(initial = emptyList())
 
     val onPlay: (Station, List<Station>) -> Unit = { s, from ->
         player.play(s, from)
@@ -83,9 +86,18 @@ fun CliampRoot(
         }
     }
 
-    Column(Modifier.fillMaxSize().background(p.ground)) {
+    Box(Modifier.fillMaxSize().background(p.ground)) {
+        Column(Modifier.fillMaxSize()) {
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when (overlay) {
+                Overlay.Queue -> QueueScreen(
+                    player = player,
+                    current = station,
+                    playing = playerState.playing,
+                    onPlay = onPlay,
+                    onOpenPlayer = { overlay = Overlay.None; tab = Tab.Play },
+                    onBack = { overlay = Overlay.None },
+                )
                 Overlay.Scope -> ScopeScreen(
                     prefs = prefs,
                     station = station,
@@ -119,6 +131,7 @@ fun CliampRoot(
                         favorites = favorites,
                         onPlay = onPlay,
                         onToggleFavorite = { s -> scope.launch { prefs.toggleFavorite(s) } },
+                        onAddToQueue = { player.addToQueue(it) },
                         onOpenStats = { overlay = Overlay.Stats },
                         onOpenSettings = { overlay = Overlay.Settings },
                         onOpenPlayer = { tab = Tab.Play },
@@ -132,14 +145,7 @@ fun CliampRoot(
                         recent = recent,
                         onPlay = onPlay,
                         onToggleFavorite = { s -> scope.launch { prefs.toggleFavorite(s) } },
-                        onOpenPlayer = { tab = Tab.Play },
-                    )
-                    Tab.Queue -> QueueScreen(
-                        prefs = prefs,
-                        player = player,
-                        current = station,
-                        playing = playerState.playing,
-                        onPlay = onPlay,
+                        onAddToQueue = { player.addToQueue(it) },
                         onOpenPlayer = { tab = Tab.Play },
                     )
                     Tab.Cmd -> CommandScreen(
@@ -173,6 +179,14 @@ fun CliampRoot(
 
         if (overlay == Overlay.None) {
             CliampTabBar(current = tab, onSelect = { tab = it })
+        }
+        }
+
+        if (overlay == Overlay.None) {
+            QueueBar(
+                count = queue.size,
+                onOpen = { overlay = Overlay.Queue },
+            )
         }
     }
 }

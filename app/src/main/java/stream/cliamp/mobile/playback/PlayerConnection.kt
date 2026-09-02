@@ -32,11 +32,16 @@ class PlayerConnection(
     private val _state = MutableStateFlow(PlayerState())
     val state: StateFlow<PlayerState> = _state.asStateFlow()
 
-    /** The list prev/next walks. Set whenever the user plays from a list. */
-    private var queue: List<Station> = emptyList()
-    private var queueIndex: Int = -1
+    private val _queue = MutableStateFlow<List<Station>>(emptyList())
+    private val _queueIndex = MutableStateFlow(-1)
 
-    val currentQueue: List<Station> get() = queue
+    /** The list prev/next walks. Set whenever the user plays from a list. */
+    val queue: StateFlow<List<Station>> = _queue.asStateFlow()
+
+    /** Index of the currently-playing station in [queue], or -1. */
+    val queueIndex: StateFlow<Int> = _queueIndex.asStateFlow()
+
+    val currentQueue: List<Station> get() = _queue.value
 
     /** Called once the controller is live, if the user asked for auto-resume. */
     var onReady: (() -> Unit)? = null
@@ -64,6 +69,7 @@ class PlayerConnection(
 
     private fun sync() {
         val c = controller ?: return
+        val qi = _queueIndex.value
         _state.value = PlayerState(
             playing = c.isPlaying,
             buffering = c.playbackState == Player.STATE_BUFFERING,
@@ -71,21 +77,25 @@ class PlayerConnection(
             positionMs = c.currentPosition.coerceAtLeast(0),
             bufferedMs = (c.bufferedPosition - c.currentPosition).coerceAtLeast(0),
             volume = c.volume,
-            hasPrev = queueIndex > 0,
-            hasNext = queueIndex >= 0 && queueIndex < queue.lastIndex,
+            hasPrev = qi > 0,
+            hasNext = qi >= 0 && qi < _queue.value.lastIndex,
         )
     }
 
     fun play(station: Station, from: List<Station> = emptyList()) {
+        var q = _queue.value
         if (from.isNotEmpty()) {
-            queue = from
-            queueIndex = from.indexOfFirst { it.url == station.url }
-        } else if (queue.none { it.url == station.url }) {
-            queue = listOf(station)
-            queueIndex = 0
+            _queue.value = from
+            q = from
+            _queueIndex.value = from.indexOfFirst { it.url == station.url }
+        } else if (q.none { it.url == station.url }) {
+            _queue.value = listOf(station)
+            q = listOf(station)
+            _queueIndex.value = 0
         } else {
-            queueIndex = queue.indexOfFirst { it.url == station.url }
+            _queueIndex.value = q.indexOfFirst { it.url == station.url }
         }
+        val queue = q
 
         PlaybackBus.publishStation(station)
         PlaybackBus.publishError(null)
@@ -101,7 +111,7 @@ class PlayerConnection(
                 val items = playlist.map { s ->
                     PlaybackService.mediaItem(context, s, StreamResolver.resolve(s.url))
                 }
-                c.setMediaItems(items, queueIndex.coerceIn(0, items.lastIndex), 0L)
+                c.setMediaItems(items, _queueIndex.value.coerceIn(0, items.lastIndex), 0L)
             } else {
                 c.setMediaItem(PlaybackService.mediaItem(context, station, StreamResolver.resolve(station.url)))
             }
@@ -137,10 +147,62 @@ class PlayerConnection(
     fun prev() = step(-1)
 
     private fun step(delta: Int) {
-        if (queue.isEmpty()) return
-        val i = (queueIndex + delta).coerceIn(0, queue.lastIndex)
-        if (i == queueIndex) return
-        play(queue[i], queue)
+        val q = _queue.value
+        if (q.isEmpty()) return
+        val i = (_queueIndex.value + delta).coerceIn(0, q.lastIndex)
+        if (i == _queueIndex.value) return
+        play(q[i], q)
+    }
+
+    /** Insert [station] into the queue without replacing it. */
+    fun addToQueue(station: Station, at: Int = Int.MAX_VALUE) {
+        val q = _queue.value.toMutableList()
+        val qi = _queueIndex.value
+        val pos = if (at == Int.MAX_VALUE) q.size else at.coerceIn(0, q.size)
+        val insertBefore = pos <= qi
+        q.add(pos, station)
+        _queue.value = q
+        if (insertBefore) _queueIndex.value = qi + 1
+        sync()
+    }
+
+    /** Drop the station at [index], keeping the playing item stable. */
+    fun removeFromQueue(index: Int) {
+        val q = _queue.value
+        if (index !in q.indices) return
+        val qi = _queueIndex.value
+        val newQ = q.filterIndexed { i, _ -> i != index }
+        _queue.value = newQ
+        _queueIndex.value = when {
+            index < qi -> (qi - 1).coerceAtLeast(-1)
+            index == qi && newQ.isEmpty() -> -1
+            index == qi -> qi
+            else -> qi
+        }
+        sync()
+    }
+
+    /** Move the station at [from] to [to], keeping the playing item stable. */
+    fun reorderQueue(from: Int, to: Int) {
+        val q = _queue.value
+        if (from !in q.indices || to !in q.indices || from == to) return
+        val qi = _queueIndex.value
+        val item = q[from]
+        val moved = q.toMutableList().apply {
+            removeAt(from)
+            add(to, item)
+        }
+        _queue.value = moved
+        // the playing station follows its item through the move
+        _queueIndex.value = moved.indexOfFirst { it.url == item.url }.let { if (qi == from) it else qi }
+        sync()
+    }
+
+    fun clearQueue() {
+        if (_queue.value.isEmpty()) return
+        _queue.value = emptyList()
+        _queueIndex.value = -1
+        sync()
     }
 
     fun setVolume(v: Float) {

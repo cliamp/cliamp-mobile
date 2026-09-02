@@ -68,7 +68,7 @@ import stream.cliamp.mobile.ui.theme.LocalPalette
 import stream.cliamp.mobile.ui.theme.Mono
 
 private enum class LocalPane(val label: String) {
-    Songs("all local songs"), Playlists("playlists")
+    Playlists("playlists"), Songs("all local songs")
 }
 
 /** The two pinned, auto-populated smart playlists on the PLAYLISTS tab. */
@@ -99,13 +99,14 @@ fun LocalScreen(
     recent: List<Station>,
     onPlay: (Station, List<Station>) -> Unit,
     onToggleFavorite: (Station) -> Unit,
+    onAddToQueue: (Station) -> Unit,
     onOpenPlayer: () -> Unit,
 ) {
     val p = LocalPalette.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var pane by remember { mutableStateOf(LocalPane.Songs) }
+    var pane by remember { mutableStateOf(LocalPane.Playlists) }
     var query by remember { mutableStateOf("") }
     var searchShift by remember { mutableStateOf(false) }
     var searchOpen by remember { mutableStateOf(false) }
@@ -156,12 +157,12 @@ fun LocalScreen(
     val openSmartPlaylist = smartPlaylists.firstOrNull { it.kind == openSmart }
     val paneVisible = openSmartPlaylist == null && showing == null
 
-    val canGoBack = showing != null || openSmartPlaylist != null || pane == LocalPane.Playlists
+    val canGoBack = showing != null || openSmartPlaylist != null || pane == LocalPane.Songs
     BackHandler(enabled = canGoBack) {
         when {
             showing != null -> openSlug = null
             openSmartPlaylist != null -> openSmart = null
-            else -> pane = LocalPane.Songs
+            else -> pane = LocalPane.Playlists
         }
     }
 
@@ -272,6 +273,7 @@ fun LocalScreen(
                     playing = playing,
                     onPlay = playAndOpen,
                     onToggleFavorite = onToggleFavorite,
+                    onAddToQueue = onAddToQueue,
                 )
                 pane == LocalPane.Playlists -> PlaylistList(
                     smart = smartPlaylists,
@@ -377,6 +379,7 @@ private fun SongList(
     playing: Boolean,
     onPlay: (Station, List<Station>) -> Unit,
     onToggleFavorite: (Station) -> Unit,
+    onAddToQueue: (Station) -> Unit,
 ) {
     val p = LocalPalette.current
     if (songs.isEmpty()) {
@@ -393,6 +396,7 @@ private fun SongList(
                 favorite = favorites.any { it.url == s.url },
                 onPlay = { onPlay(s, songs) },
                 onToggleFavorite = { onToggleFavorite(s) },
+                onAddToQueue = { onAddToQueue(s) },
             )
         }
         item { Spacer(Modifier.height(20.dp)) }
@@ -407,6 +411,7 @@ private fun SongRow(
     favorite: Boolean,
     onPlay: () -> Unit,
     onToggleFavorite: () -> Unit,
+    onAddToQueue: () -> Unit,
 ) {
     val p = LocalPalette.current
     val context = LocalContext.current
@@ -443,6 +448,12 @@ private fun SongRow(
                     "favourite",
                     Modifier.size(15.dp).clickable(onClick = onToggleFavorite),
                     tint = if (favorite) p.accent else p.inkFaint,
+                )
+                Icon(
+                    CliampIcons.Plus,
+                    "add to queue",
+                    Modifier.size(16.dp).clickable(onClick = onAddToQueue),
+                    tint = p.inkFaint,
                 )
             }
         },

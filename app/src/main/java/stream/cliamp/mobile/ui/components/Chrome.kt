@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
@@ -109,7 +111,45 @@ fun IdentityBar(left: String, right: String, modifier: Modifier = Modifier) {
 }
 
 enum class Tab(val label: String) {
-    Play("PLAY"), Lib("LIB"), Stations("STATIONS"), Queue("QUEUE"), Cmd(":CMD")
+    Play("PLAY"), Lib("LIB"), Stations("STATIONS"), Cmd(":CMD")
+}
+
+/**
+ * Compact, fixed queue access: a floating queue icon with a count badge,
+ * pinned top-right above every tab. It takes no layout space — it overlays
+ * the screen via [Modifier.offset] and [align], so the tabs keep their own
+ * full bleed.
+ */
+@Composable
+fun BoxScope.QueueBar(
+    count: Int,
+    onOpen: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val p = LocalPalette.current
+    Box(
+        modifier
+            .align(Alignment.TopEnd)
+            .offset(y = WindowInsets.statusBars.asPaddingValues().calculateTopPadding())
+            .padding(top = 12.dp, end = Gutter)
+            .clip(RoundedCornerShape(6.dp))
+            .background(if (p.dark) p.keyFace else p.ground)
+            .border(1.dp, p.keyBorder, RoundedCornerShape(6.dp))
+            .clickable(indication = null, interactionSource = remember { MutableInteractionSource() }, onClick = onOpen)
+            .padding(horizontal = 9.dp, vertical = 6.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            Box(Modifier.size(14.dp), contentAlignment = Alignment.Center) {
+                Icon(CliampIcons.QueueTabLines, null, Modifier.size(14.dp), tint = p.ink)
+            }
+            Mono(
+                if (count == 1) "1" else "$count",
+                CliampType.tabLabel,
+                p.ink,
+            )
+        }
+    }
 }
 
 @Composable
@@ -156,10 +196,6 @@ private fun TabItem(
                 Tab.Play -> Icon(CliampIcons.PlayTab, null, Modifier.size(17.dp), tint = tint)
                 Tab.Lib -> Icon(CliampIcons.LibTab, null, Modifier.size(17.dp), tint = tint)
                 Tab.Stations -> Icon(CliampIcons.StationsTab, null, Modifier.size(17.dp), tint = tint)
-                Tab.Queue -> Box {
-                    Icon(CliampIcons.QueueTabLines, null, Modifier.size(17.dp), tint = tint)
-                    Icon(CliampIcons.QueueTabArrow, null, Modifier.size(17.dp), tint = tint)
-                }
                 Tab.Cmd -> Icon(CliampIcons.CmdTab, null, Modifier.size(17.dp), tint = tint)
             }
         }
