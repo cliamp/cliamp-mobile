@@ -117,6 +117,10 @@ fun LocalScreen(
     val loading by localLibrary.loading.collectAsState()
     val libError by localLibrary.error.collectAsState()
     val allPlaylists by playlists.playlists.collectAsState(initial = emptyList())
+    val pinnedSlugs by playlists.pinnedSlugs.collectAsState(initial = emptySet())
+    val filteredPlaylists = filterPlaylists(allPlaylists, query)
+    val pinnedPlaylists = filteredPlaylists.filter { it.station.slug in pinnedSlugs }
+    val unpinnedPlaylists = filteredPlaylists.filterNot { it.station.slug in pinnedSlugs }
 
     val audioPerm = if (Build.VERSION.SDK_INT >= 33)
         Manifest.permission.READ_MEDIA_AUDIO
@@ -272,7 +276,8 @@ fun LocalScreen(
                 )
                 pane == LocalPane.Playlists -> PlaylistList(
                     smart = smartPlaylists,
-                    playlists = filterPlaylists(allPlaylists, query),
+                    pinnedPlaylists = pinnedPlaylists,
+                    playlists = unpinnedPlaylists,
                     query = query,
                     songs = songs,
                     creating = creatingName,
@@ -291,6 +296,7 @@ fun LocalScreen(
                         if (openSlug == slug) openSlug = null
                     },
                     onAddSongs = { slug -> openSlug = slug; pane = LocalPane.Songs },
+                    onPin = { slug, pinned -> scope.launch { playlists.setPinned(slug, pinned) } },
                     onOpen = { openSlug = it.station.slug },
                     onOpenSmart = { openSmart = it.kind },
                 )
@@ -434,6 +440,7 @@ private fun SongRow(
 @Composable
 private fun PlaylistList(
     smart: List<SmartPlaylist>,
+    pinnedPlaylists: List<PlaylistStore.Playlist>,
     playlists: List<PlaylistStore.Playlist>,
     query: String,
     songs: List<Station>,
@@ -446,6 +453,7 @@ private fun PlaylistList(
     onBeginRename: (String) -> Unit,
     onDelete: (String) -> Unit,
     onAddSongs: (String) -> Unit,
+    onPin: (String, Boolean) -> Unit,
     onOpen: (PlaylistStore.Playlist) -> Unit,
     onOpenSmart: (SmartPlaylist) -> Unit,
 ) {
@@ -453,9 +461,32 @@ private fun PlaylistList(
     val context = LocalContext.current
     Column(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
-            item { SectionLabel("pinned — ${smart.size}") }
+            val pinnedCount = smart.size + pinnedPlaylists.size
+            item { SectionLabel("pinned — $pinnedCount") }
             items(smart, key = { it.key }) { sp ->
                 SmartPlaylistRow(sp = sp, onOpen = { onOpenSmart(sp) }, context = context)
+            }
+            items(pinnedPlaylists, key = { it.station.slug }) { pl ->
+                if (pl.station.slug == renamingSlug) {
+                    InlineNameField(
+                        initial = pl.station.name,
+                        placeholder = "rename playlist",
+                        onDone = { onRename(pl.station.slug, it) },
+                        onCancel = onCancel,
+                    )
+                } else {
+                    PlaylistRow(
+                        pl = pl,
+                        songs = songs,
+                        pinned = true,
+                        onOpen = onOpen,
+                        onEdit = { onBeginRename(pl.station.slug) },
+                        onDelete = { onDelete(pl.station.slug) },
+                        onAddSongs = { onAddSongs(pl.station.slug) },
+                        onPin = { onPin(pl.station.slug, false) },
+                        context = context,
+                    )
+                }
             }
             if (creating) {
                 item {
@@ -482,10 +513,12 @@ private fun PlaylistList(
                     PlaylistRow(
                         pl = pl,
                         songs = songs,
+                        pinned = false,
                         onOpen = onOpen,
                         onEdit = { onBeginRename(pl.station.slug) },
                         onDelete = { onDelete(pl.station.slug) },
                         onAddSongs = { onAddSongs(pl.station.slug) },
+                        onPin = { onPin(pl.station.slug, true) },
                         context = context,
                     )
                 }
@@ -505,10 +538,12 @@ private fun PlaylistList(
 private fun PlaylistRow(
     pl: PlaylistStore.Playlist,
     songs: List<Station>,
+    pinned: Boolean,
     onOpen: (PlaylistStore.Playlist) -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onAddSongs: () -> Unit,
+    onPin: () -> Unit,
     context: android.content.Context,
 ) {
     val p = LocalPalette.current
@@ -535,7 +570,7 @@ private fun PlaylistRow(
         trailing = {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Mono("${pl.songIds.size} songs", CliampType.meta, p.inkFaint)
-                PlaylistMenu(onAddSongs = onAddSongs, onEdit = onEdit, onDelete = onDelete)
+                PlaylistMenu(pinned = pinned, onAddSongs = onAddSongs, onEdit = onEdit, onDelete = onDelete, onPin = onPin)
                 Icon(CliampIcons.CaretRight, "open", Modifier.size(11.dp), tint = p.inkTertiary)
             }
         },
@@ -590,9 +625,15 @@ private fun SmartPlaylistRow(
     }
 }
 
-/** The ⋮ overflow menu on a playlist row: edit the name, or remove the playlist. */
+/** The ⋮ overflow menu on a playlist row: pin/unpin, edit the name, or remove the playlist. */
 @Composable
-private fun PlaylistMenu(onAddSongs: () -> Unit, onEdit: () -> Unit, onDelete: () -> Unit) {
+private fun PlaylistMenu(
+    pinned: Boolean,
+    onAddSongs: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+    onPin: () -> Unit,
+) {
     val p = LocalPalette.current
     var open by remember { mutableStateOf(false) }
     Box {
@@ -616,6 +657,8 @@ private fun PlaylistMenu(onAddSongs: () -> Unit, onEdit: () -> Unit, onDelete: (
                     Modifier.width(170.dp).clip(RoundedCornerShape(6.dp))
                         .background(p.ground).border(1.dp, p.hairlineRegion, RoundedCornerShape(6.dp)),
                 ) {
+                    MenuItem(if (pinned) "unpin" else "pin", p.ink, onPin) { open = false }
+                    HairlineDivider(region = true)
                     MenuItem("add songs", p.ink, onAddSongs) { open = false }
                     HairlineDivider(region = true)
                     MenuItem("edit name", p.ink, onEdit) { open = false }
