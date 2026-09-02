@@ -61,7 +61,7 @@ fun CliampRoot(
 ) {
     val p = LocalPalette.current
     val scope = rememberCoroutineScope()
-    var tab by remember { mutableStateOf(Tab.Lib) }
+    var tab by remember { mutableStateOf(Tab.Stations) }
     var overlay by remember { mutableStateOf<Overlay>(Overlay.None) }
 
     val playerState by player.state.collectAsState()
@@ -76,10 +76,10 @@ fun CliampRoot(
         repository.reportPlay(s)
     }
 
-    BackHandler(enabled = overlay != Overlay.None || tab != Tab.Lib) {
+    BackHandler(enabled = overlay != Overlay.None || tab != Tab.Stations) {
         when {
             overlay != Overlay.None -> overlay = Overlay.None
-            else -> tab = Tab.Lib
+            else -> tab = Tab.Stations
         }
     }
 
@@ -111,7 +111,7 @@ fun CliampRoot(
                         player = player,
                         onOpenScope = { overlay = Overlay.Scope },
                     )
-                    Tab.Lib -> StationsScreen(
+                    Tab.Stations -> StationsScreen(
                         repository = repository,
                         prefs = prefs,
                         current = station,
