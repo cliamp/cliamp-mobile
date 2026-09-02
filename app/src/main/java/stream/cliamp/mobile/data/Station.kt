@@ -3,7 +3,7 @@ package stream.cliamp.mobile.data
 import kotlinx.serialization.Serializable
 
 /** Where a station came from. Drives both grouping and the accent it gets. */
-enum class StationSource { Cliamp, Directory, Custom }
+enum class StationSource { Cliamp, Directory, Custom, Local }
 
 @Serializable
 data class Station(
@@ -21,6 +21,12 @@ data class Station(
     val homepage: String = "",
     val favicon: String = "",
     val uuid: String = "",
+    /** Artwork URI for local songs and playlists (a content:// or file:// string). */
+    val cover: String = "",
+    /** Local-file metadata, empty for streams. */
+    val artist: String = "",
+    val album: String = "",
+    val durationMs: Long = 0L,
 ) {
     /** `mp3 · 128k · Germany`, skipping whatever the directory did not know. */
     val meta: String

@@ -69,6 +69,10 @@ fun StationsScreen(
     val p = LocalPalette.current
     var source by remember { mutableStateOf(Source.All) }
 
+    // The LIB tab's favourites row shows radio stations only — local songs
+    // live in their own smart playlists on the PLAYLISTS tab.
+    val radioFavorites = favorites.filterNot { it.source == StationSource.Local }
+
     val cliamp by repository.cliamp.collectAsState()
     val stats by repository.stats.collectAsState()
     val directory by repository.directory.collectAsState()
@@ -132,18 +136,18 @@ fun StationsScreen(
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState) {
 
             if (source == Source.Favs || source == Source.All) {
-                if (favorites.isNotEmpty()) {
+                if (radioFavorites.isNotEmpty()) {
                     item {
-                        SectionLabel("favourites — ${favorites.size}")
+                        SectionLabel("favourites — ${radioFavorites.size}")
                     }
-                    items(favorites, key = { "fav:${it.url}" }) { s ->
+                    items(radioFavorites, key = { "fav:${it.url}" }) { s ->
                         StationRow(
                             station = s,
                             listeners = repository.listeners(s),
                             active = current?.url == s.url,
                             playing = playing && current?.url == s.url,
                             favorite = true,
-                            onPlay = { onPlay(s, favorites); onOpenPlayer() },
+                            onPlay = { onPlay(s, radioFavorites); onOpenPlayer() },
                             onToggleFavorite = { onToggleFavorite(s) },
                         )
                     }

@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import stream.cliamp.mobile.data.Station
+import stream.cliamp.mobile.data.StationSource
 
 /**
  * The UI's handle on playback. Transport goes through a MediaController rather
@@ -91,9 +92,19 @@ class PlayerConnection(
         PlaybackBus.publishFormat(StreamFormat())
 
         scope.launch {
-            val resolved = StreamResolver.resolve(station.url)
             val c = controller ?: return@launch
-            c.setMediaItem(PlaybackService.mediaItem(context, station, resolved))
+            // A list of local files is a real playlist: Media3 should play one
+            // after another. Radio lists are only for prev/next stepping, so we
+            // never auto-advance a mixed/stream source.
+            val playlist = queue.takeIf { it.all { s -> s.source == StationSource.Local } && it.size > 1 }
+            if (playlist != null) {
+                val items = playlist.map { s ->
+                    PlaybackService.mediaItem(context, s, StreamResolver.resolve(s.url))
+                }
+                c.setMediaItems(items, queueIndex.coerceIn(0, items.lastIndex), 0L)
+            } else {
+                c.setMediaItem(PlaybackService.mediaItem(context, station, StreamResolver.resolve(station.url)))
+            }
             c.prepare()
             c.play()
             sync()
