@@ -27,6 +27,7 @@ class PlaylistStore(private val context: Context) {
     )
 
     private val KMembers = stringPreferencesKey("members")
+    private val KPinned = stringPreferencesKey("pinned")
     private val KPlaylists = stringPreferencesKey("playlists")
 
     val playlists: Flow<List<Playlist>> = context.playlistDataStore.data.map { p ->
@@ -62,6 +63,28 @@ class PlaylistStore(private val context: Context) {
             val members = decodeMembers(p[KMembers]).toMutableMap()
             members.remove(slug)
             p[KMembers] = Http.json.encodeToString(members)
+            val pinned = p[KPinned]?.let {
+                runCatching { Http.json.decodeFromString<Set<String>>(it) }.getOrNull()
+            } ?: emptySet()
+            p[KPinned] = Http.json.encodeToString(pinned - slug)
+        }
+    }
+
+    /** The set of pinned playlist slugs (shown at the top of the PLAYLISTS tab). */
+    val pinnedSlugs: Flow<Set<String>> = context.playlistDataStore.data.map { p ->
+        p[KPinned]?.let {
+            runCatching { Http.json.decodeFromString<Set<String>>(it) }.getOrNull()
+        } ?: emptySet()
+    }
+
+    /** Pin or unpin a playlist. */
+    suspend fun setPinned(slug: String, pinned: Boolean) {
+        context.playlistDataStore.edit { p ->
+            val cur = p[KPinned]?.let {
+                runCatching { Http.json.decodeFromString<Set<String>>(it) }.getOrNull()
+            } ?: emptySet()
+            val next = if (pinned) cur + slug else cur - slug
+            p[KPinned] = Http.json.encodeToString(next)
         }
     }
 
