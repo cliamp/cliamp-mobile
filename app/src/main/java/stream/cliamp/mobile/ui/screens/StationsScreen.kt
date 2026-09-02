@@ -65,7 +65,6 @@ fun StationsScreen(
     onOpenStats: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenPlayer: () -> Unit,
-    onSwitchPane: () -> Unit = {},
 ) {
     val p = LocalPalette.current
     var source by remember { mutableStateOf(Source.All) }
@@ -126,12 +125,6 @@ fun StationsScreen(
                     "top voted",
                     directory.query == DirectoryQuery.TopVoted,
                     onClick = { repository.loadDirectory(DirectoryQuery.TopVoted, reset = true) },
-                )
-                Spacer(Modifier.width(4.dp))
-                Chip(
-                    "local · playlists",
-                    selected = false,
-                    onClick = onSwitchPane,
                 )
             }
         }

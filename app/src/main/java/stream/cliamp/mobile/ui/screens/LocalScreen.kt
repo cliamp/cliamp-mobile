@@ -2,6 +2,7 @@ package stream.cliamp.mobile.ui.screens
 
 import android.Manifest
 import android.os.Build
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
@@ -9,6 +10,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,11 +38,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Popup
 import kotlinx.coroutines.launch
 import stream.cliamp.mobile.data.LocalArt
 import stream.cliamp.mobile.data.LocalLibrary
@@ -61,7 +68,7 @@ import stream.cliamp.mobile.ui.theme.LocalPalette
 import stream.cliamp.mobile.ui.theme.Mono
 
 private enum class LocalPane(val label: String) {
-    Songs("all songs"), Playlists("playlists")
+    Songs("all local songs"), Playlists("playlists")
 }
 
 /**
@@ -79,7 +86,6 @@ fun LocalScreen(
     onPlay: (Station, List<Station>) -> Unit,
     onToggleFavorite: (Station) -> Unit,
     onOpenPlayer: () -> Unit,
-    switchPane: () -> Unit,
 ) {
     val p = LocalPalette.current
     val context = LocalContext.current
@@ -88,6 +94,8 @@ fun LocalScreen(
     var pane by remember { mutableStateOf(LocalPane.Songs) }
     var query by remember { mutableStateOf("") }
     var openSlug by remember { mutableStateOf<String?>(null) }
+    var creatingName by remember { mutableStateOf(false) }
+    var renamingSlug by remember { mutableStateOf<String?>(null) }
 
     val songs by localLibrary.songs.collectAsState()
     val loading by localLibrary.loading.collectAsState()
@@ -119,6 +127,14 @@ fun LocalScreen(
     val showing = allPlaylists.firstOrNull { it.station.slug == openSlug }
     val playAndOpen: (Station, List<Station>) -> Unit = { s, list -> onPlay(s, list); onOpenPlayer() }
 
+    val canGoBack = showing != null || pane == LocalPane.Playlists
+    BackHandler(enabled = canGoBack) {
+        when {
+            showing != null -> openSlug = null
+            else -> pane = LocalPane.Songs
+        }
+    }
+
     Column(Modifier.fillMaxSize().background(p.ground)) {
         ScreenHeader {
             Row(
@@ -127,10 +143,6 @@ fun LocalScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Mono(if (showing != null) showing.station.name else "library", CliampType.screenTitle, p.ink, maxLines = 1)
-                Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(CliampIcons.Search, "search", Modifier.size(16.dp), tint = p.inkSecondary)
-                    Chip("radio", selected = false, onClick = switchPane)
-                }
             }
             if (showing != null) {
                 // playlist detail sub-header
@@ -195,7 +207,22 @@ fun LocalScreen(
                 pane == LocalPane.Playlists -> PlaylistList(
                     playlists = allPlaylists,
                     songs = songs,
-                    onNew = { scope.launch { playlists.create("playlist ${System.currentTimeMillis() % 10000}") } },
+                    creating = creatingName,
+                    renamingSlug = renamingSlug,
+                    onCreate = { name -> scope.launch { playlists.create(name) }; creatingName = false },
+                    onBeginCreate = { creatingName = true },
+                    onCancel = { creatingName = false; renamingSlug = null },
+                    onRename = { slug, name ->
+                        scope.launch { playlists.rename(slug, name) }
+                        renamingSlug = null
+                    },
+                    onBeginRename = { renamingSlug = it },
+                    onDelete = { slug ->
+                        scope.launch { playlists.delete(slug) }
+                        if (renamingSlug == slug) renamingSlug = null
+                        if (openSlug == slug) openSlug = null
+                    },
+                    onAddSongs = { slug -> openSlug = slug; pane = LocalPane.Songs },
                     onOpen = { openSlug = it.station.slug },
                 )
             }
@@ -333,65 +360,222 @@ private fun SongRow(
 private fun PlaylistList(
     playlists: List<PlaylistStore.Playlist>,
     songs: List<Station>,
-    onNew: () -> Unit,
+    creating: Boolean,
+    renamingSlug: String?,
+    onCreate: (String) -> Unit,
+    onBeginCreate: () -> Unit,
+    onCancel: () -> Unit,
+    onRename: (String, String) -> Unit,
+    onBeginRename: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    onAddSongs: (String) -> Unit,
     onOpen: (PlaylistStore.Playlist) -> Unit,
 ) {
     val p = LocalPalette.current
     val context = LocalContext.current
     Column(Modifier.fillMaxSize()) {
-        if (playlists.isEmpty()) {
-            CenterNote("no playlists yet — make one and add your songs", p.inkFaint)
-        } else {
-            LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+        LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+            if (playlists.isEmpty() && !creating) {
+                item {
+                    CenterNote("no playlists yet — make one and add your songs", p.inkFaint)
+                }
+            } else if (playlists.isNotEmpty()) {
                 item { SectionLabel("playlists — ${playlists.size}") }
-                items(playlists, key = { it.station.slug }) { pl ->
-                    val cover = pl.station.cover
-                    var art by remember(pl.station.slug) { mutableStateOf<ImageBitmap?>(null) }
-                    LaunchedEffect(pl.station.slug, cover) {
-                        art = LocalArt.bitmapFor(cover, context.contentResolver)?.asImageBitmap()
-                    }
-                    ListRow(
-                        onClick = { onOpen(pl) },
-                        verticalPadding = 9.dp,
-                        leading = {
-                            Box(
-                                Modifier.size(44.dp).clip(RoundedCornerShape(5.dp))
-                                    .then(if (art == null) Modifier.border(1.dp, p.chipBorder, RoundedCornerShape(5.dp)) else Modifier),
-                            ) {
-                                if (art != null) {
-                                    Image(art!!, pl.station.name, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                                } else {
-                                    StripedArt(modifier = Modifier.fillMaxSize(), radius = 5.dp, caption = null)
-                                }
-                            }
-                        },
-                        trailing = {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                Mono("${pl.songIds.size} songs", CliampType.meta, p.inkFaint)
-                                Icon(CliampIcons.CaretRight, "open", Modifier.size(11.dp), tint = p.inkTertiary)
-                            }
-                        },
-                    ) {
-                        Mono(pl.station.name, CliampType.rowPrimaryMedium, p.ink, maxLines = 1)
-                        Mono(
-                            pl.songIds.joinToString(" · ") { titleOf(it, songs) }.ifBlank { "empty playlist" },
-                            CliampType.rowSecondary, p.inkTertiary, maxLines = 1,
-                        )
-                    }
+            }
+            if (creating) {
+                item {
+                    InlineNameField(
+                        initial = "",
+                        placeholder = "name this playlist",
+                        onDone = onCreate,
+                        onCancel = onCancel,
+                    )
+                }
+            }
+            items(playlists, key = { it.station.slug }) { pl ->
+                if (pl.station.slug == renamingSlug) {
+                    InlineNameField(
+                        initial = pl.station.name,
+                        placeholder = "rename playlist",
+                        onDone = { onRename(pl.station.slug, it) },
+                        onCancel = onCancel,
+                    )
+                } else {
+                    PlaylistRow(
+                        pl = pl,
+                        songs = songs,
+                        onOpen = onOpen,
+                        onEdit = { onBeginRename(pl.station.slug) },
+                        onDelete = { onDelete(pl.station.slug) },
+                        onAddSongs = { onAddSongs(pl.station.slug) },
+                        context = context,
+                    )
+                }
+            }
+            item { Spacer(Modifier.height(20.dp)) }
+            item {
+                if (!creating) {
+                    NewPlaylistCard(onClick = onBeginCreate)
                 }
             }
         }
+        Spacer(Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun PlaylistRow(
+    pl: PlaylistStore.Playlist,
+    songs: List<Station>,
+    onOpen: (PlaylistStore.Playlist) -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+    onAddSongs: () -> Unit,
+    context: android.content.Context,
+) {
+    val p = LocalPalette.current
+    val cover = pl.station.cover
+    var art by remember(pl.station.slug) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(pl.station.slug, cover) {
+        art = LocalArt.bitmapFor(cover, context.contentResolver)?.asImageBitmap()
+    }
+    ListRow(
+        onClick = { onOpen(pl) },
+        verticalPadding = 9.dp,
+        leading = {
+            Box(
+                Modifier.size(44.dp).clip(RoundedCornerShape(5.dp))
+                    .then(if (art == null) Modifier.border(1.dp, p.chipBorder, RoundedCornerShape(5.dp)) else Modifier),
+            ) {
+                if (art != null) {
+                    Image(art!!, pl.station.name, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                } else {
+                    StripedArt(modifier = Modifier.fillMaxSize(), radius = 5.dp, caption = null)
+                }
+            }
+        },
+        trailing = {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Mono("${pl.songIds.size} songs", CliampType.meta, p.inkFaint)
+                PlaylistMenu(onAddSongs = onAddSongs, onEdit = onEdit, onDelete = onDelete)
+                Icon(CliampIcons.CaretRight, "open", Modifier.size(11.dp), tint = p.inkTertiary)
+            }
+        },
+    ) {
+        Mono(pl.station.name, CliampType.rowPrimaryMedium, p.ink, maxLines = 1)
+        Mono(
+            pl.songIds.joinToString(" · ") { titleOf(it, songs) }.ifBlank { "empty playlist" },
+            CliampType.rowSecondary, p.inkTertiary, maxLines = 1,
+        )
+    }
+}
+
+/** The ⋮ overflow menu on a playlist row: edit the name, or remove the playlist. */
+@Composable
+private fun PlaylistMenu(onAddSongs: () -> Unit, onEdit: () -> Unit, onDelete: () -> Unit) {
+    val p = LocalPalette.current
+    var open by remember { mutableStateOf(false) }
+    Box {
         Box(
-            Modifier.fillMaxWidth().padding(Gutter).clip(RoundedCornerShape(8.dp)).background(p.panel)
-                .border(1.dp, p.hairlineRegion, RoundedCornerShape(8.dp)).clickable(onClick = onNew)
-                .padding(15.dp),
+            Modifier.size(36.dp).clip(RoundedCornerShape(5.dp)).clickable { open = true },
+            contentAlignment = Alignment.Center,
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Icon(CliampIcons.Plus, "new playlist", Modifier.size(14.dp), tint = p.accent)
-                Mono("new playlist", CliampType.chip, p.accent)
+            Icon(
+                CliampIcons.More, "menu",
+                Modifier.size(17.dp),
+                tint = p.inkTertiary,
+            )
+        }
+        if (open) {
+            Popup(
+                onDismissRequest = { open = false },
+                alignment = Alignment.TopEnd,
+                offset = IntOffset(0, 8),
+            ) {
+                Column(
+                    Modifier.width(170.dp).clip(RoundedCornerShape(6.dp))
+                        .background(p.ground).border(1.dp, p.hairlineRegion, RoundedCornerShape(6.dp)),
+                ) {
+                    MenuItem("add songs", p.ink, onAddSongs) { open = false }
+                    HairlineDivider(region = true)
+                    MenuItem("edit name", p.ink, onEdit) { open = false }
+                    HairlineDivider(region = true)
+                    MenuItem("remove playlist", p.destructiveInk, onDelete) { open = false }
+                }
             }
         }
-        Spacer(Modifier.height(16.dp))
+    }
+}
+
+@Composable
+private fun MenuItem(label: String, color: androidx.compose.ui.graphics.Color, action: () -> Unit, close: () -> Unit) {
+    val p = LocalPalette.current
+    Row(
+        Modifier.fillMaxWidth().clickable {
+            close()
+            action()
+        }.padding(horizontal = 16.dp, vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Mono(label, CliampType.chip, color)
+    }
+}
+
+/** A monospace, palette-styled input for naming playlists. */
+@Composable
+private fun InlineNameField(
+    initial: String,
+    placeholder: String,
+    onDone: (String) -> Unit,
+    onCancel: () -> Unit,
+) {
+    val p = LocalPalette.current
+    var text by remember { mutableStateOf(initial) }
+    val focusRequester = remember { FocusRequester() }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+    Row(
+        Modifier.fillMaxWidth().padding(Gutter)
+            .clip(RoundedCornerShape(6.dp)).border(1.dp, p.chipBorder, RoundedCornerShape(6.dp))
+            .background(p.panel).padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        BasicTextField(
+            value = text,
+            onValueChange = { text = it.take(48) },
+            modifier = Modifier.weight(1f).focusRequester(focusRequester),
+            textStyle = CliampType.rowPrimary.copy(color = p.ink),
+            cursorBrush = SolidColor(p.accent),
+            singleLine = true,
+            decorationBox = { inner ->
+                Box {
+                    if (text.isEmpty()) Mono(placeholder, CliampType.rowPrimary, p.inkFaint)
+                    inner()
+                }
+            },
+        )
+        Mono("SAVE", CliampType.tabLabel, p.accent,
+            Modifier.clip(RoundedCornerShape(4.dp)).background(p.accent.copy(alpha = 0.14f))
+                .clickable { onDone(text) }.padding(horizontal = 9.dp, vertical = 7.dp))
+        Mono("CANCEL", CliampType.tabLabel, p.inkTertiary,
+            Modifier.clip(RoundedCornerShape(4.dp)).border(1.dp, p.chipBorder, RoundedCornerShape(4.dp))
+                .clickable(onClick = onCancel).padding(horizontal = 9.dp, vertical = 7.dp))
+    }
+}
+
+@Composable
+private fun NewPlaylistCard(onClick: () -> Unit) {
+    val p = LocalPalette.current
+    Box(
+        Modifier.fillMaxWidth().padding(Gutter).clip(RoundedCornerShape(8.dp)).background(p.panel)
+            .border(1.dp, p.hairlineRegion, RoundedCornerShape(8.dp)).clickable(onClick = onClick)
+            .padding(15.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Icon(CliampIcons.Plus, "new playlist", Modifier.size(14.dp), tint = p.accent)
+            Mono("new playlist", CliampType.chip, p.accent)
+        }
     }
 }
 
@@ -428,7 +612,7 @@ private fun PlaylistDetailShown(
             items(allSongs, key = { it.id }) { s ->
                 val inPl = s.id in songIds
                 ListRow(
-                    onClick = { if (!inPl) onAdd(s.id) },
+                    onClick = { if (inPl) onRemove(s.id) else onAdd(s.id) },
                     verticalPadding = 9.dp,
                     leading = {
                         Box(
@@ -437,10 +621,10 @@ private fun PlaylistDetailShown(
                                       else Modifier.border(1.dp, p.chipBorder, RoundedCornerShape(4.dp))),
                             contentAlignment = Alignment.Center,
                         ) {
-                            if (inPl) Icon(CliampIcons.PlayRow, null, Modifier.size(11.dp), tint = p.onAccent)
+                            if (inPl) Icon(CliampIcons.Check, null, Modifier.size(11.dp), tint = p.onAccent)
                         }
                     },
-                    trailing = { Icon(CliampIcons.Plus, "add", Modifier.size(13.dp), if (inPl) p.inkFaint else p.accent) },
+                    trailing = { Icon(CliampIcons.Minus, "remove", Modifier.size(13.dp), if (inPl) p.accent else p.inkFaint) },
                 ) {
                     Mono(s.name, CliampType.rowPrimary, p.ink, maxLines = 1)
                     Mono(if (s.artist.isNotBlank()) s.artist else s.meta, CliampType.rowSecondary, p.inkTertiary, maxLines = 1)

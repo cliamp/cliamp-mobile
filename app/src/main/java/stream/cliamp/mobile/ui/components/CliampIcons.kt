@@ -47,6 +47,11 @@ private fun rrect(x: Float, y: Float, w: Float, h: Float, r: Float): String = bu
     append("v${-(h - 2 * r)}a$r $r 0 0 1 $r ${-r}z")
 }
 
+private fun circle(cx: Float, cy: Float, r: Float): String =
+    "M${cx - r} $cy" +
+        "a$r $r 0 1 1 ${2 * r} 0" +
+        "a$r $r 0 1 1 ${-2 * r} 0z"
+
 object CliampIcons {
 
     /**
@@ -99,6 +104,23 @@ object CliampIcons {
     val StarFilled = solid(16f, 16f, "M8 1.5l1.9 4.2 4.6.5-3.4 3.1.9 4.5L8 11.6 4 13.8l.9-4.5L1.5 6.2l4.6-.5z")
 
     val LibTab = stroked(18f, 18f, 1.7f, rect(1f, 1f, 5f, 16f), rect(8f, 1f, 5f, 16f), "M15 2l2 15")
+    /**
+     * A vinyl disc: outer groove ring, a sliver of the label, and the centre
+     * hole. Reads as "music library" at tab size and stays distinct from the
+     * queue's line-list and LIB's book-stack.
+     */
+    val PlaylistsTab = ImageVector.Builder(
+        defaultWidth = 18.dp, defaultHeight = 18.dp, viewportWidth = 18f, viewportHeight = 18f,
+    ).apply {
+        val groove = addPathNodes("M9 2a7 7 0 1 1 -0.001 0")
+        addPath(groove, stroke = SolidColor(Color.White), strokeLineWidth = 1.6f)
+        // label ring inside the grooves
+        addPath(addPathNodes("M9 5a4 4 0 1 1 -0.001 0"), fill = SolidColor(Color.White))
+        // centre hole
+        val hole = addPathNodes("M9 7.2a1.8 1.8 0 1 1 -0.001 0")
+        addPath(hole, fill = SolidColor(Color.White))
+        addPath(hole, stroke = SolidColor(Color(0xFF000000)), strokeLineWidth = 1f)
+    }.build()
     val QueueTabLines = stroked(18f, 18f, 1.7f, "M1 4h16M1 9h11M1 14h11")
     val QueueTabArrow = solid(18f, 18f, "M15 11l3 2-3 2z")
     val CmdTab = stroked(18f, 18f, 1.7f, rrect(0.9f, 1.9f, 16.2f, 14.2f, 2f), "M4.5 7l2.2 2.2L4.5 11.4M8.6 11.8h5")
@@ -107,9 +129,12 @@ object CliampIcons {
     val Search = stroked(16f, 16f, 1.8f, "M6.6 1.5a5.1 5.1 0 100 10.2 5.1 5.1 0 100-10.2z", "M10.4 10.4L15 15")
     val Plus = solid(14f, 14f, rect(6f, 0f, 2f, 14f), rect(0f, 6f, 14f, 2f))
     val Minus = solid(12f, 12f, rect(0f, 5f, 12f, 2f))
+    val Check = stroked(13f, 13f, 2.2f, "M1.5 7l3.2 3.2L11.5 3")
     val CaretDown = solid(10f, 10f, "M0 2h10L5 8z")
     val CaretRight = solid(10f, 10f, "M2 0v10l6-5z")
     val Download = stroked(16f, 16f, 1.6f, "M8 1v9", "M4.5 6.5L8 10l3.5-3.5", "M1.5 13.5h13")
+    /** Vertical ellipsis: row overflow menu. */
+    val More = solid(16f, 16f, circle(8f, 3f, 2.2f), circle(8f, 8f, 2.2f), circle(8f, 13f, 2.2f))
     val Lines = solid(16f, 14f, rect(0f, 0f, 16f, 2f), rect(0f, 6f, 16f, 2f), rect(0f, 12f, 16f, 2f))
     val ListShort = stroked(16f, 16f, 1.7f, "M1 3h14M1 8h9M1 13h9")
     val MeterSmall = solid(

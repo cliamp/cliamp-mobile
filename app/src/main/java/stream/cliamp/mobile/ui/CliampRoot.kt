@@ -49,9 +49,6 @@ private sealed interface Overlay {
     data object Settings : Overlay
 }
 
-/** Which half of the LIB tab is showing: the radio browse or the local library. */
-private enum class LibPane(val label: String) { Radio("radio"), Local("local") }
-
 @UnstableApi
 @Composable
 fun CliampRoot(
@@ -66,7 +63,6 @@ fun CliampRoot(
     val scope = rememberCoroutineScope()
     var tab by remember { mutableStateOf(Tab.Lib) }
     var overlay by remember { mutableStateOf<Overlay>(Overlay.None) }
-    var libPane by remember { mutableStateOf(LibPane.Local) }
 
     val playerState by player.state.collectAsState()
     val station by PlaybackBus.station.collectAsState()
@@ -114,32 +110,28 @@ fun CliampRoot(
                         player = player,
                         onOpenScope = { overlay = Overlay.Scope },
                     )
-                    Tab.Lib -> when (libPane) {
-                        LibPane.Radio -> StationsScreen(
-                            repository = repository,
-                            prefs = prefs,
-                            current = station,
-                            playing = playerState.playing,
-                            favorites = favorites,
-                            onPlay = onPlay,
-                            onToggleFavorite = { s -> scope.launch { prefs.toggleFavorite(s) } },
-                            onOpenStats = { overlay = Overlay.Stats },
-                            onOpenSettings = { overlay = Overlay.Settings },
-                            onOpenPlayer = { tab = Tab.Play },
-                            onSwitchPane = { libPane = LibPane.Local },
-                        )
-                        LibPane.Local -> LocalScreen(
-                            localLibrary = localLibrary,
-                            playlists = playlists,
-                            current = station,
-                            playing = playerState.playing,
-                            favorites = favorites,
-                            onPlay = onPlay,
-                            onToggleFavorite = { s -> scope.launch { prefs.toggleFavorite(s) } },
-                            onOpenPlayer = { tab = Tab.Play },
-                            switchPane = { libPane = LibPane.Radio },
-                        )
-                    }
+                    Tab.Lib -> StationsScreen(
+                        repository = repository,
+                        prefs = prefs,
+                        current = station,
+                        playing = playerState.playing,
+                        favorites = favorites,
+                        onPlay = onPlay,
+                        onToggleFavorite = { s -> scope.launch { prefs.toggleFavorite(s) } },
+                        onOpenStats = { overlay = Overlay.Stats },
+                        onOpenSettings = { overlay = Overlay.Settings },
+                        onOpenPlayer = { tab = Tab.Play },
+                    )
+                    Tab.Playlists -> LocalScreen(
+                        localLibrary = localLibrary,
+                        playlists = playlists,
+                        current = station,
+                        playing = playerState.playing,
+                        favorites = favorites,
+                        onPlay = onPlay,
+                        onToggleFavorite = { s -> scope.launch { prefs.toggleFavorite(s) } },
+                        onOpenPlayer = { tab = Tab.Play },
+                    )
                     Tab.Queue -> QueueScreen(
                         prefs = prefs,
                         player = player,

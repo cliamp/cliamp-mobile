@@ -108,7 +108,9 @@ fun IdentityBar(left: String, right: String, modifier: Modifier = Modifier) {
     }
 }
 
-enum class Tab(val label: String) { Play("PLAY"), Lib("LIB"), Queue("QUEUE"), Cmd(":CMD") }
+enum class Tab(val label: String) {
+    Play("PLAY"), Lib("LIB"), Playlists("PLAYLISTS"), Queue("QUEUE"), Cmd(":CMD")
+}
 
 @Composable
 fun CliampTabBar(current: Tab, onSelect: (Tab) -> Unit, modifier: Modifier = Modifier) {
@@ -153,6 +155,7 @@ private fun TabItem(
             when (tab) {
                 Tab.Play -> Icon(CliampIcons.PlayTab, null, Modifier.size(17.dp), tint = tint)
                 Tab.Lib -> Icon(CliampIcons.LibTab, null, Modifier.size(17.dp), tint = tint)
+                Tab.Playlists -> Icon(CliampIcons.PlaylistsTab, null, Modifier.size(17.dp), tint = tint)
                 Tab.Queue -> Box {
                     Icon(CliampIcons.QueueTabLines, null, Modifier.size(17.dp), tint = tint)
                     Icon(CliampIcons.QueueTabArrow, null, Modifier.size(17.dp), tint = tint)
