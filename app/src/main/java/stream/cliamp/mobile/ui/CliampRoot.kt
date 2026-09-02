@@ -22,6 +22,8 @@ import androidx.compose.ui.Modifier
 import androidx.media3.common.util.UnstableApi
 import kotlinx.coroutines.launch
 import stream.cliamp.mobile.data.Prefs
+import stream.cliamp.mobile.data.LocalLibrary
+import stream.cliamp.mobile.data.PlaylistStore
 import stream.cliamp.mobile.data.Repository
 import stream.cliamp.mobile.data.Station
 import stream.cliamp.mobile.playback.PlaybackBus
@@ -29,6 +31,7 @@ import stream.cliamp.mobile.playback.PlayerConnection
 import stream.cliamp.mobile.ui.components.CliampTabBar
 import stream.cliamp.mobile.ui.components.Tab
 import stream.cliamp.mobile.ui.screens.CommandScreen
+import stream.cliamp.mobile.ui.screens.LocalScreen
 import stream.cliamp.mobile.ui.screens.MiniPlayer
 import stream.cliamp.mobile.ui.screens.NowPlayingScreen
 import stream.cliamp.mobile.ui.screens.QueueScreen
@@ -46,18 +49,24 @@ private sealed interface Overlay {
     data object Settings : Overlay
 }
 
+/** Which half of the LIB tab is showing: the radio browse or the local library. */
+private enum class LibPane(val label: String) { Radio("radio"), Local("local") }
+
 @UnstableApi
 @Composable
 fun CliampRoot(
     repository: Repository,
     prefs: Prefs,
     player: PlayerConnection,
+    localLibrary: LocalLibrary,
+    playlists: PlaylistStore,
     dark: Boolean,
 ) {
     val p = LocalPalette.current
     val scope = rememberCoroutineScope()
     var tab by remember { mutableStateOf(Tab.Lib) }
     var overlay by remember { mutableStateOf<Overlay>(Overlay.None) }
+    var libPane by remember { mutableStateOf(LibPane.Local) }
 
     val playerState by player.state.collectAsState()
     val station by PlaybackBus.station.collectAsState()
@@ -105,18 +114,32 @@ fun CliampRoot(
                         player = player,
                         onOpenScope = { overlay = Overlay.Scope },
                     )
-                    Tab.Lib -> StationsScreen(
-                        repository = repository,
-                        prefs = prefs,
-                        current = station,
-                        playing = playerState.playing,
-                        favorites = favorites,
-                        onPlay = onPlay,
-                        onToggleFavorite = { s -> scope.launch { prefs.toggleFavorite(s) } },
-                        onOpenStats = { overlay = Overlay.Stats },
-                        onOpenSettings = { overlay = Overlay.Settings },
-                        onOpenPlayer = { tab = Tab.Play },
-                    )
+                    Tab.Lib -> when (libPane) {
+                        LibPane.Radio -> StationsScreen(
+                            repository = repository,
+                            prefs = prefs,
+                            current = station,
+                            playing = playerState.playing,
+                            favorites = favorites,
+                            onPlay = onPlay,
+                            onToggleFavorite = { s -> scope.launch { prefs.toggleFavorite(s) } },
+                            onOpenStats = { overlay = Overlay.Stats },
+                            onOpenSettings = { overlay = Overlay.Settings },
+                            onOpenPlayer = { tab = Tab.Play },
+                            onSwitchPane = { libPane = LibPane.Local },
+                        )
+                        LibPane.Local -> LocalScreen(
+                            localLibrary = localLibrary,
+                            playlists = playlists,
+                            current = station,
+                            playing = playerState.playing,
+                            favorites = favorites,
+                            onPlay = onPlay,
+                            onToggleFavorite = { s -> scope.launch { prefs.toggleFavorite(s) } },
+                            onOpenPlayer = { tab = Tab.Play },
+                            switchPane = { libPane = LibPane.Radio },
+                        )
+                    }
                     Tab.Queue -> QueueScreen(
                         prefs = prefs,
                         player = player,

@@ -11,6 +11,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import stream.cliamp.mobile.data.Prefs
 import stream.cliamp.mobile.net.Http
+import stream.cliamp.mobile.data.LocalLibrary
+import stream.cliamp.mobile.data.PlaylistStore
 import stream.cliamp.mobile.data.Repository
 import stream.cliamp.mobile.playback.PlayerConnection
 import stream.cliamp.mobile.widget.CliampWidgetReceiver
@@ -26,6 +28,8 @@ class CliampApp : Application() {
 
     val prefs: Prefs by lazy { Prefs(this) }
     val repository: Repository by lazy { Repository(prefs, appScope) }
+    val localLibrary: LocalLibrary by lazy { LocalLibrary(this) }
+    val playlists: PlaylistStore by lazy { PlaylistStore(this) }
     val player: PlayerConnection by lazy { PlayerConnection(this, CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)) }
 
     override fun onCreate() {
