@@ -29,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.media3.common.util.UnstableApi
 import kotlinx.coroutines.launch
@@ -275,14 +276,22 @@ fun NowPlayingScreen(
 @Composable
 private fun StationArt(station: Station?, modifier: Modifier = Modifier) {
     val p = LocalPalette.current
+    val context = LocalContext.current
     var art by remember(station?.id) { mutableStateOf<ImageBitmap?>(null) }
     LaunchedEffect(station?.id) {
         art = null
         val s = station ?: return@LaunchedEffect
-        art = StationArtSource.bitmapFor(s)?.asImageBitmap()
+        art = if (s.source == StationSource.Local) {
+            stream.cliamp.mobile.data.LocalArt.bitmapFor(s.cover, context.contentResolver)?.asImageBitmap()
+        } else {
+            StationArtSource.bitmapFor(s)?.asImageBitmap()
+        }
     }
     val caption = when {
         station == null -> "[ no station tuned ]"
+        station.source == StationSource.Local ->
+            if (station.album.isNotBlank()) "[ ${station.album.lowercase()} · ${station.artist.lowercase()} ]"
+            else "[ local file ]"
         station.source == StationSource.Cliamp -> "[ ${station.slug} · cliamp radio ]"
         station.countryCode.isNotBlank() -> "[ ${station.countryCode.lowercase()} · live stream ]"
         else -> "[ live stream ]"

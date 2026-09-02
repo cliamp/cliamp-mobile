@@ -22,6 +22,8 @@ import androidx.compose.ui.Modifier
 import androidx.media3.common.util.UnstableApi
 import kotlinx.coroutines.launch
 import stream.cliamp.mobile.data.Prefs
+import stream.cliamp.mobile.data.LocalLibrary
+import stream.cliamp.mobile.data.PlaylistStore
 import stream.cliamp.mobile.data.Repository
 import stream.cliamp.mobile.data.Station
 import stream.cliamp.mobile.playback.PlaybackBus
@@ -29,6 +31,7 @@ import stream.cliamp.mobile.playback.PlayerConnection
 import stream.cliamp.mobile.ui.components.CliampTabBar
 import stream.cliamp.mobile.ui.components.Tab
 import stream.cliamp.mobile.ui.screens.CommandScreen
+import stream.cliamp.mobile.ui.screens.LocalScreen
 import stream.cliamp.mobile.ui.screens.MiniPlayer
 import stream.cliamp.mobile.ui.screens.NowPlayingScreen
 import stream.cliamp.mobile.ui.screens.QueueScreen
@@ -52,6 +55,8 @@ fun CliampRoot(
     repository: Repository,
     prefs: Prefs,
     player: PlayerConnection,
+    localLibrary: LocalLibrary,
+    playlists: PlaylistStore,
     dark: Boolean,
 ) {
     val p = LocalPalette.current
@@ -63,6 +68,7 @@ fun CliampRoot(
     val station by PlaybackBus.station.collectAsState()
     val streamTitle by PlaybackBus.streamTitle.collectAsState()
     val favorites by prefs.favorites.collectAsState(initial = emptyList())
+    val recent by prefs.history.collectAsState(initial = emptyList())
     val reconnect by PlaybackBus.reconnectAttempt.collectAsState()
 
     val onPlay: (Station, List<Station>) -> Unit = { s, from ->
@@ -115,6 +121,17 @@ fun CliampRoot(
                         onToggleFavorite = { s -> scope.launch { prefs.toggleFavorite(s) } },
                         onOpenStats = { overlay = Overlay.Stats },
                         onOpenSettings = { overlay = Overlay.Settings },
+                        onOpenPlayer = { tab = Tab.Play },
+                    )
+                    Tab.Playlists -> LocalScreen(
+                        localLibrary = localLibrary,
+                        playlists = playlists,
+                        current = station,
+                        playing = playerState.playing,
+                        favorites = favorites,
+                        recent = recent,
+                        onPlay = onPlay,
+                        onToggleFavorite = { s -> scope.launch { prefs.toggleFavorite(s) } },
                         onOpenPlayer = { tab = Tab.Play },
                     )
                     Tab.Queue -> QueueScreen(
