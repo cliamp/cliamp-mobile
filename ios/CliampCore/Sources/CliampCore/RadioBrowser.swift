@@ -181,6 +181,7 @@ public actor RadioBrowserClient {
     private let discovery: MirrorDiscovery
     private var mirrors: [String]
     private var dead: Set<String> = []
+    private var discoveryTask: Task<[String], Never>?
 
     public init(
         transport: RadioBrowserTransport = URLSessionTransport(),
@@ -300,8 +301,12 @@ public actor RadioBrowserClient {
         components.path = "/json/stations/search"
         components.queryItems = items
         let path = components.string ?? "/json/stations/search"
-        let body = try await withRetries { try await self.get(path) }
-        return try Self.decode(body)
+        // Decode inside the retry so a truncated 200 is retried like any
+        // other failed fetch, the way the Android repository does.
+        return try await withRetries {
+            let body = try await self.get(path)
+            return try Self.decode(body)
+        }
     }
 
     private func get(_ path: String) async throws -> String {
@@ -327,23 +332,38 @@ public actor RadioBrowserClient {
     }
 
     private func discover() async {
-        var found = await discovery()
-        if found.isEmpty { found = Self.fallbackMirrors }
-        var candidates: [String] = []
+        // Reentrant callers share one sweep instead of racing it: without
+        // this, overlapping startup requests each probed the field and a
+        // later completion could overwrite newer mirror state.
+        if let inFlight = discoveryTask {
+            _ = await inFlight.value
+            return
+        }
         let pinned = mirrorStore.load()
-        if let pinned { candidates.append(pinned) }
-        candidates.append(contentsOf: found)
-        var reachable: [String] = []
-        await withTaskGroup(of: (String, Bool).self) { group in
-            for candidate in Set(candidates) {
-                group.addTask { [transport] in
-                    (candidate, await transport.probe(URL(string: candidate + "/json/stats")!))
+        let discoverFn = discovery
+        let probeTransport = transport
+        let task = Task { () -> [String] in
+            var found = await discoverFn()
+            if found.isEmpty { found = Self.fallbackMirrors }
+            var candidates: [String] = []
+            if let pinned { candidates.append(pinned) }
+            candidates.append(contentsOf: found)
+            var reachable: [String] = []
+            await withTaskGroup(of: (String, Bool).self) { group in
+                for candidate in Set(candidates) {
+                    group.addTask {
+                        (candidate, await probeTransport.probe(URL(string: candidate + "/json/stats")!))
+                    }
+                }
+                for await (candidate, alive) in group where alive {
+                    reachable.append(candidate)
                 }
             }
-            for await (candidate, alive) in group where alive {
-                reachable.append(candidate)
-            }
+            return reachable
         }
+        discoveryTask = task
+        let reachable = await task.value
+        discoveryTask = nil
         if reachable.isEmpty {
             mirrors = []
         } else {

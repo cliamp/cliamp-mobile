@@ -28,6 +28,7 @@ final class StationsModel {
     private let defaults: UserDefaults
     private var started = false
     private var generation = 0
+    private var serverOffset = 0
 
     private enum Keys {
         static let cliampGrid = "cliamp_grid"
@@ -57,6 +58,9 @@ final class StationsModel {
         guard !started else { return }
         started = true
         custom = customStore.load()
+        // The directory starts first so a user filter tap during the other
+        // startup fetches is a later generation and cannot be overwritten.
+        loadDirectory(.topVoted, reset: true)
         async let cliampResult = CliampRadio.fetchStations()
         async let statsResult = client.stats()
         async let tagsResult = client.topTags(limit: 24)
@@ -65,7 +69,6 @@ final class StationsModel {
         directoryStats = await statsResult
         tags = await tagsResult
         countries = await countriesResult
-        loadDirectory(.topVoted, reset: true)
     }
 
     func loadDirectory(_ query: DirectoryQuery, reset: Bool) {
@@ -77,7 +80,9 @@ final class StationsModel {
             directoryError = nil
         }
         let token = generation
-        let offset = reset ? 0 : directory.count
+        // The offset counts server records, not displayed rows: a page full of
+        // duplicates must still advance the cursor.
+        let offset = reset ? 0 : serverOffset
         directoryLoading = true
         Task {
             do {
@@ -89,6 +94,7 @@ final class StationsModel {
                 let base = reset ? [] : directory
                 var seen = Set(base.map(\.url))
                 directory = base + page.filter { seen.insert($0.url).inserted }
+                serverOffset = reset ? page.count : serverOffset + page.count
                 directoryExhausted = page.isEmpty
                 directoryError = nil
             } catch {

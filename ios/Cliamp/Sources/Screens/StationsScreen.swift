@@ -204,7 +204,7 @@ struct StationsScreen: View {
         if model.directory.isEmpty, model.directoryLoading {
             EmptyNote("loading…")
         } else if model.directoryGrid {
-            grid(model.directory)
+            grid(model.directory, paginate: true)
         } else {
             ForEach(model.directory) { station in
                 StationRow(
@@ -269,7 +269,11 @@ struct StationsScreen: View {
     // MARK: shared pieces
 
     @ViewBuilder
-    private func grid(_ stations: [Station], removable: Bool = false) -> some View {
+    private func grid(
+        _ stations: [Station],
+        removable: Bool = false,
+        paginate: Bool = false
+    ) -> some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 10)], spacing: 10) {
             ForEach(stations) { station in
                 StationTile(
@@ -282,6 +286,9 @@ struct StationsScreen: View {
                     onToggleFavorite: { app.toggleFavorite(station) },
                     onRemove: removable ? { model.removeCustom(station) } : nil
                 )
+                .onAppear {
+                    if paginate { model.nextPageIfNeeded(current: station) }
+                }
             }
         }
         .padding(.horizontal, 14)
