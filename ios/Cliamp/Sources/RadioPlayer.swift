@@ -20,6 +20,7 @@ final class RadioPlayer {
     private var sessionConfigured = false
     private var navigator = RadioNavigator()
     private var navTask: Task<Void, Never>?
+    private var system: SystemPlayback?
 
     /// The latest 64-band FFT frame from the audio thread, empty when nothing
     /// is flowing. The meters read it; nothing else should.
@@ -52,6 +53,7 @@ final class RadioPlayer {
                 self?.apply(status)
             }
         }
+        system = SystemPlayback(player: self)
     }
 
     func play(_ station: Station) {
@@ -73,11 +75,13 @@ final class RadioPlayer {
         guard let url = URL(string: station.url) else {
             error = "couldn't play that stream"
             updateNavigationAvailability()
+            system?.refresh()
             return
         }
         onRecordPlay?(station)
         navigator.recordPlay(station)
         updateNavigationAvailability()
+        system?.refresh()
         let item = AVPlayerItem(url: url)
         // A post-effects tap gives the meters the PCM that is actually
         // playing, for the real FFT. If the tap cannot attach, the meter
@@ -107,6 +111,7 @@ final class RadioPlayer {
                 )
                 self.error = message ?? "couldn't play that stream"
                 self.playing = false
+                self.system?.refresh()
             }
         }
         player.replaceCurrentItem(with: item)
@@ -114,6 +119,7 @@ final class RadioPlayer {
         icy.start(url: url) { [weak self] title in
             Task { @MainActor [weak self] in
                 self?.streamTitle = title
+                self?.system?.refresh()
             }
         }
     }
@@ -183,15 +189,28 @@ final class RadioPlayer {
     }
 
     func toggle() {
-        guard station != nil else { return }
         if playing {
-            player.pause()
-            icy.stop()
+            pause()
         } else {
-            error = nil
-            player.play()
-            resumeMetadata()
+            resume()
         }
+    }
+
+    /// An explicit pause: the lock screen and interruptions land here too.
+    func pause() {
+        guard station != nil else { return }
+        player.pause()
+        icy.stop()
+        system?.refresh()
+    }
+
+    /// Resumes the loaded item; never builds a second player.
+    func resume() {
+        guard station != nil else { return }
+        error = nil
+        player.play()
+        resumeMetadata()
+        system?.refresh()
     }
 
     private func resumeMetadata() {
@@ -199,6 +218,7 @@ final class RadioPlayer {
         icy.start(url: url) { [weak self] title in
             Task { @MainActor [weak self] in
                 self?.streamTitle = title
+                self?.system?.refresh()
             }
         }
     }
@@ -207,6 +227,7 @@ final class RadioPlayer {
         buffering = status == .waitingToPlayAtSpecifiedRate
         playing = status == .playing
         updateTicker()
+        system?.refresh()
     }
 
     private func updateTicker() {
