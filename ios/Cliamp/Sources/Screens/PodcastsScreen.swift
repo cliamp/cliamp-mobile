@@ -15,6 +15,7 @@ struct PodcastsScreen: View {
     let onOpenShow: (PodcastShow) -> Void
 
     @State private var pane: Pane = .all
+    @State private var topTrigger = 0
 
     enum Pane: String, CaseIterable, Identifiable {
         case all
@@ -26,11 +27,18 @@ struct PodcastsScreen: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            CliampHeader("Podcasts", onSearch: onOpenSearch, onSettings: onOpenSettings) {
+            CliampHeader(
+                "Podcasts",
+                onSearch: onOpenSearch,
+                onSettings: onOpenSettings,
+                onTitleTap: { topTrigger += 1 }
+            ) {
                 chips
             }
+            ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
+                    Color.clear.frame(height: 0).id("top")
                     if pane == .subscribed {
                         subscribedSection
                     }
@@ -39,6 +47,12 @@ struct PodcastsScreen: View {
                     }
                     Spacer().frame(height: 20)
                 }
+            }
+            .onChange(of: topTrigger) { _, _ in
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo("top", anchor: .top)
+                }
+            }
             }
         }
         .background(palette.ground)

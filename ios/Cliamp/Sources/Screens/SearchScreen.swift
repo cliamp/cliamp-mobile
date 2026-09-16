@@ -33,7 +33,7 @@ struct SearchScreen: View {
                     get: { model.query },
                     set: { model.query = $0 }
                 ))
-                .cliampText(CliampType.trackTitleSmall)
+                .cliampText(CliampType.trackTitleCompact)
                 .foregroundStyle(palette.ink)
                 .textFieldStyle(.plain)
                 .autocorrectionDisabled()
@@ -97,7 +97,6 @@ struct SearchScreen: View {
         case .song, .favorite: "local — global"
         case .station: "radio — global"
         case .show, .episode: "podcasts — global"
-        case .tag: "tags — global"
         }
     }
 
@@ -134,7 +133,6 @@ struct SearchScreen: View {
         case .song(let station), .station(let station), .favorite(let station): station.name
         case .episode(let station, _): station.name
         case .show(let show, _): show.title
-        case .tag(let name, _): "#\(name)"
         }
     }
 
@@ -145,7 +143,6 @@ struct SearchScreen: View {
         case .favorite(let station): station.meta.isEmpty ? station.name : station.meta
         case .episode(_, let showTitle): showTitle
         case .show(let show, _): show.meta
-        case .tag(_, let count): "\(count) stations"
         }
     }
 
@@ -153,8 +150,12 @@ struct SearchScreen: View {
     /// hit type's glyph, with the playing badge on the active station.
     @ViewBuilder
     private func art(_ hit: SearchHit, active: Bool) -> some View {
-        if let station = hit.playable ?? showStation(hit) {
-            StationArtView(station: station, size: 40, fallback: .podcast)
+        if case .show(let show, _) = hit, !show.artwork.hasPrefix("http") {
+            // A show without artwork gets the standalone glyph Android draws.
+            CliampIcon(CliampIcons.podRow, size: 15, tint: palette.inkTertiary)
+                .frame(width: 40, height: 40)
+        } else if let station = hit.playable ?? showStation(hit) {
+            StationArtView(station: station, size: 40, fallback: fallback(hit))
                 .overlay {
                     if active {
                         RoundedRectangle(cornerRadius: CliampShape.tiny)
@@ -169,9 +170,6 @@ struct SearchScreen: View {
                             .frame(width: 22, height: 22)
                     }
                 }
-        } else {
-            CliampIcon(icon(hit), size: 15, tint: palette.inkTertiary)
-                .frame(width: 40, height: 40)
         }
     }
 
@@ -180,13 +178,10 @@ struct SearchScreen: View {
         return nil
     }
 
-    private func icon(_ hit: SearchHit) -> CliampVector {
+    private func fallback(_ hit: SearchHit) -> StationArtFallback {
         switch hit {
-        case .song, .favorite: CliampIcons.musicNote
-        case .station: CliampIcons.stationsTab
-        case .episode: CliampIcons.podRow
-        case .show: CliampIcons.podRow
-        case .tag: CliampIcons.listShort
+        case .song, .favorite, .station: .glyph
+        case .episode, .show: .podcast
         }
     }
 
@@ -211,7 +206,11 @@ struct SearchScreen: View {
         if let station = hit.playable {
             // Android builds the continuation from every playable hit in the
             // displayed list, in order.
-            player.play(station, from: model.hits.compactMap(\.playable))
+            player.play(
+                station,
+                from: model.hits.compactMap(\.playable),
+                contextKey: "search:\(model.term):\(model.scope.rawValue)"
+            )
             return
         }
         if case .show(let show, _) = hit {

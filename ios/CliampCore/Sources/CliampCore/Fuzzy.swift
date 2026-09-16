@@ -5,13 +5,15 @@ import Foundation
 /// is better. Consecutive runs are cheaper than spread-out matches, and a
 /// leading or word-boundary match is cheaper than mid-word, so "aln" ranks
 /// above "ana" when searching for "Alan Walker". Ported from Android's
-/// `Fuzzy.kt`.
+/// `Fuzzy.kt`, matching case-folded Unicode scalars so composed characters
+/// ("İstanbul") behave like the Kotlin code-unit comparison.
 public enum Fuzzy {
-    /// Positions (in `haystack`) that form the match, or nil when no match.
+    /// Scalar positions in `haystack` that form the match, or nil when no
+    /// match. Mirrors Android's `match`.
     public static func match(query: String, haystack: String) -> [Int]? {
         guard !query.isEmpty else { return [] }
-        let q = Array(query.lowercased())
-        let h = Array(haystack.lowercased())
+        let q = Array(query.lowercased().unicodeScalars)
+        let h = Array(haystack.lowercased().unicodeScalars)
         guard q.count <= h.count else { return nil }
 
         var at: [Int] = []
@@ -28,9 +30,9 @@ public enum Fuzzy {
 
     /// Lower is better. `Int.max` means no match.
     public static func score(query: String, haystack: String) -> Int {
-        guard let at = match(query: query, haystack: haystack), !at.isEmpty else {
-            return query.isEmpty ? 0 : Int.max
-        }
+        guard let at = match(query: query, haystack: haystack) else { return Int.max }
+        guard !at.isEmpty else { return 0 }
+        let scalars = Array(haystack.lowercased().unicodeScalars)
         var total = 0
         var previous = -2
         for (index, position) in at.enumerated() {
@@ -43,16 +45,26 @@ public enum Fuzzy {
         }
         if at[0] == 0 { total -= 4 } // reward a prefix match
         if at[0] > 0 {
-            let characters = Array(haystack)
-            let before = characters[at[0] - 1]
+            let before = scalars[at[0] - 1]
             if before == " " || before == "-" || before == "(" { total -= 2 }
         }
-        if haystack.count <= 12 { total -= 1 }
+        if scalars.count <= 12 { total -= 1 }
         return total
     }
 
-    /// Char positions that matched, for highlight rendering.
+    /// Character positions that matched, for highlight rendering.
     public static func matchedPositions(query: String, haystack: String) -> Set<Int>? {
-        match(query: query, haystack: haystack).map(Set.init)
+        guard let scalarHits = match(query: query, haystack: haystack) else { return nil }
+        let matched = Set(scalarHits)
+        var result = Set<Int>()
+        var scalarIndex = 0
+        for (characterIndex, character) in haystack.enumerated() {
+            let width = character.unicodeScalars.count
+            if (scalarIndex..<(scalarIndex + width)).contains(where: matched.contains) {
+                result.insert(characterIndex)
+            }
+            scalarIndex += width
+        }
+        return result
     }
 }

@@ -11,7 +11,6 @@ enum SearchHit: Identifiable, Hashable {
     case station(Station)
     case favorite(Station)
     case episode(Station, showTitle: String)
-    case tag(name: String, count: Int)
     case show(PodcastShow, subscribed: Bool)
 
     var id: String { key }
@@ -20,7 +19,7 @@ enum SearchHit: Identifiable, Hashable {
         switch self {
         case .song(let station), .station(let station), .favorite(let station): station
         case .episode(let station, _): station
-        case .tag, .show: nil
+        case .show: nil
         }
     }
 
@@ -30,7 +29,6 @@ enum SearchHit: Identifiable, Hashable {
         case .station(let station): "station:\(station.url)"
         case .favorite(let station): "fav:\(station.url)"
         case .episode(let station, _): "episode:\(station.id)"
-        case .tag(let name, _): "tag:#\(name)"
         case .show(let show, _): "show:\(show.feedUrl)"
         }
     }
@@ -41,7 +39,6 @@ enum SearchHit: Identifiable, Hashable {
         case .station: "radio"
         case .favorite: "fav"
         case .episode: "episode"
-        case .tag(let name, _): "#\(name)"
         case .show(_, let subscribed): subscribed ? "subscribed" : "podcast"
         }
     }
@@ -54,7 +51,6 @@ enum SearchHit: Identifiable, Hashable {
             ([station.name] + station.tagList).joined(separator: " ")
         case .episode(let station, let showTitle):
             [station.name, showTitle].filter { !$0.isEmpty }.joined(separator: " ")
-        case .tag(let name, _): name
         case .show(let show, _):
             [show.title, show.author].filter { !$0.isEmpty }.joined(separator: " ")
         }
@@ -90,7 +86,9 @@ final class SearchModel {
                 default: false
                 }
             case .tags:
-                if case .tag = hit { true } else { false }
+                // Radio tag destinations arrive with the search phase; the
+                // chip yields nothing until then.
+                false
             case .providers: false
             }
         }
@@ -119,8 +117,6 @@ final class SearchModel {
     private let customStore = CustomStationStore()
     private let radioClient = RadioBrowserClient()
     private let log = Logger(subsystem: "stream.cliamp.mobile", category: "search")
-    private var tags: [NameCount] = []
-    private var tagsLoaded = false
     private var remoteShows: [PodcastShow] = []
     private var remoteStations: [Station] = []
     private var remoteTerm = ""
@@ -131,15 +127,7 @@ final class SearchModel {
         self.podcasts = podcasts
     }
 
-    func start() {
-        guard !tagsLoaded else { return }
-        tagsLoaded = true
-        Task { [weak self] in
-            guard let self else { return }
-            self.tags = await self.radioClient.topTags(limit: 60)
-            if self.term.isEmpty { self.publish() }
-        }
-    }
+    func start() {}
 
     /// Resident collections changed (favourites, subscriptions, history):
     /// recompute without a new query.
@@ -195,7 +183,7 @@ final class SearchModel {
 
     private func fetchRemote(term text: String, token: Int) async {
         async let shows = try? PodcastDirectory.search(term: text)
-        async let stations = try? radioClient.stations(for: .search(text), offset: 0, limit: 20)
+        async let stations = try? radioClient.stations(for: .search(text), offset: 0, limit: 60)
         let (showPage, stationPage) = await (shows, stations)
         guard token == generation else { return }
         remoteShows = showPage ?? []
@@ -221,7 +209,6 @@ final class SearchModel {
             // Idle suggestions, in the Android order: tags, subscribed shows,
             // then the radio wall, deduped.
             var idle: [SearchHit] = []
-            idle += tags.prefix(12).map { .tag(name: $0.name, count: $0.stationcount) }
             var seenFeeds = Set<String>()
             for show in podcasts.subscriptions.prefix(8) where seenFeeds.insert(show.feedUrl).inserted {
                 idle.append(.show(show, subscribed: true))
@@ -250,7 +237,6 @@ final class SearchModel {
 
         residentRadio.forEach { consider(.station($0)) }
         if remoteTerm == text { remoteStations.forEach { consider(.station($0)) } }
-        tags.forEach { consider(.tag(name: $0.name, count: $0.stationcount)) }
 
         // Deduped by feed; a subscribed show ranks ahead of the same show in
         // the directory page.

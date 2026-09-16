@@ -119,7 +119,7 @@ struct StationsScreen: View {
         if model.cliamp.isEmpty {
             EmptyNote("loading…")
         } else if model.cliampGrid {
-            grid(model.cliamp)
+            grid(model.cliamp, contextKey: "cliamp")
         } else {
             ForEach(model.cliamp) { station in
                 StationRow(
@@ -127,7 +127,7 @@ struct StationsScreen: View {
                     active: player.station?.url == station.url,
                     playing: player.playing,
                     favorite: app.isFavorite(station),
-                    action: { play(station, from: model.cliamp) },
+                    action: { play(station, from: model.cliamp, contextKey: "cliamp") },
                     onToggleFavorite: { app.toggleFavorite(station) }
                 )
             }
@@ -173,7 +173,7 @@ struct StationsScreen: View {
             )
         }
         if model.customGrid {
-            grid(model.custom, removable: true)
+            grid(model.custom, contextKey: "custom", removable: true)
         } else {
             ForEach(model.custom) { station in
                 CustomStationRow(
@@ -181,7 +181,7 @@ struct StationsScreen: View {
                     active: player.station?.url == station.url,
                     playing: player.playing,
                     favorite: app.isFavorite(station),
-                    action: { play(station, from: model.custom) },
+                    action: { play(station, from: model.custom, contextKey: "custom") },
                     onToggleFavorite: { app.toggleFavorite(station) },
                     onRemove: { model.removeCustom(station) }
                 )
@@ -205,7 +205,7 @@ struct StationsScreen: View {
         if model.directory.isEmpty, model.directoryLoading {
             EmptyNote("loading…")
         } else if model.directoryGrid {
-            grid(model.directory, paginate: true)
+            grid(model.directory, contextKey: "directory:\(model.directoryQuery)", paginate: true)
         } else {
             ForEach(model.directory) { station in
                 StationRow(
@@ -213,7 +213,7 @@ struct StationsScreen: View {
                     active: player.station?.url == station.url,
                     playing: player.playing,
                     favorite: app.isFavorite(station),
-                    action: { play(station, from: model.directory) },
+                    action: { play(station, from: model.directory, contextKey: "directory:\(model.directoryQuery)") },
                     onToggleFavorite: { app.toggleFavorite(station) }
                 )
                 .onAppear { model.nextPageIfNeeded(current: station) }
@@ -272,6 +272,7 @@ struct StationsScreen: View {
     @ViewBuilder
     private func grid(
         _ stations: [Station],
+        contextKey: String,
         removable: Bool = false,
         paginate: Bool = false
     ) -> some View {
@@ -283,7 +284,7 @@ struct StationsScreen: View {
                     playing: player.playing,
                     favorite: app.isFavorite(station),
                     subtitle: station.source == .custom ? "custom" : "cliamp",
-                    action: { play(station, from: stations) },
+                    action: { play(station, from: stations, contextKey: contextKey) },
                     onToggleFavorite: { app.toggleFavorite(station) },
                     onRemove: removable ? { model.removeCustom(station) } : nil
                 )
@@ -296,9 +297,9 @@ struct StationsScreen: View {
         .padding(.vertical, 2)
     }
 
-    private func play(_ station: Station, from list: [Station]) {
+    private func play(_ station: Station, from list: [Station], contextKey: String? = nil) {
         model.reportPlay(station)
-        player.play(station, from: list)
+        player.play(station, from: list, contextKey: contextKey)
     }
 }
 

@@ -21,6 +21,15 @@ extension PodcastShow {
 }
 
 extension PodcastEpisode {
+    /// `1h 35m` / `28m`, Android's podcast duration copy. Nil when unknown.
+    var durationLabel: String? {
+        guard durationMs > 0 else { return nil }
+        let total = durationMs / 1000
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        return hours > 0 ? "\(hours)h \(minutes)m" : "\(minutes)m"
+    }
+
     /// `2 sep · 1:04:12`, skipping whatever the feed omitted.
     var listMeta: String {
         var parts: [String] = []

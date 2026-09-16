@@ -35,7 +35,7 @@ struct StationArtView: View {
                 case .glyph:
                     GlyphPlate(CliampIcons.stationsTab, size: size)
                 case .podcast:
-                    GlyphPlate(CliampIcons.podRow, size: size)
+                    GlyphPlate(CliampIcons.podRow, size: min(size, 40))
                 case .plate:
                     ArtPlate(radius: corner)
                         .overlay(

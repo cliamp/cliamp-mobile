@@ -4,7 +4,9 @@ import Foundation
 /// a burst coalesces and settles on the final target after the debounce
 /// window, the same leading-edge scheme Android uses.
 public enum RadioNavDecision: Equatable, Sendable {
-    case play(Station)
+    /// Play the occurrence at `index` of the walked list, so duplicate URLs
+    /// resolve to the tapped occurrence instead of the first match.
+    case play(Station, index: Int)
     case schedule
     case ignore
 }
@@ -47,38 +49,40 @@ public struct RadioNavigator: Sendable {
     /// then the ring. An explicit source is linear and never redoes, exactly
     /// like Android's `_source.isNotEmpty()` shortcut.
     public mutating func next(
-        walk: [Station], ring: Bool, allowRedo: Bool, current: Station?, nowMs: Int64
+        walk: [Station], ring: Bool, allowRedo: Bool,
+        currentIndex: Int?, current: Station?, nowMs: Int64
     ) -> RadioNavDecision {
         if allowRedo, ring, canGoForward {
             pastIndex += 1
-            cancelPending()
-            return .play(past[pastIndex])
+            let station = past[pastIndex]
+            return .play(station, index: walk.firstIndex(of: station) ?? 0)
         }
-        return step(+1, walk: walk, ring: ring, current: current, nowMs: nowMs)
+        return step(+1, walk: walk, ring: ring, currentIndex: currentIndex, current: current, nowMs: nowMs)
     }
 
     /// Previous walks what was actually heard, falling back to the walked list
     /// only at the bottom of the stack.
     public mutating func previous(
-        walk: [Station], ring: Bool, current: Station?, nowMs: Int64
+        walk: [Station], ring: Bool, currentIndex: Int?, current: Station?, nowMs: Int64
     ) -> RadioNavDecision {
         if canGoBack {
             pastIndex -= 1
-            cancelPending()
-            return .play(past[pastIndex])
+            let station = past[pastIndex]
+            return .play(station, index: walk.firstIndex(of: station) ?? 0)
         }
-        return step(-1, walk: walk, ring: ring, current: current, nowMs: nowMs)
+        return step(-1, walk: walk, ring: ring, currentIndex: currentIndex, current: current, nowMs: nowMs)
     }
 
     /// The coalesced target once a burst's timer fires, or nil when nothing
     /// is pending.
-    public mutating func takePending(walk: [Station]) -> Station? {
+    public mutating func takePending(walk: [Station]) -> (station: Station, index: Int)? {
         guard let index = pendingIndex, !walk.isEmpty else {
             pendingIndex = nil
             return nil
         }
         pendingIndex = nil
-        return walk[Self.wrap(index, count: walk.count)]
+        let wrapped = Self.wrap(index, count: walk.count)
+        return (walk[wrapped], wrapped)
     }
 
     /// A fresh explicit play supersedes any coalescing burst still waiting.
@@ -87,7 +91,8 @@ public struct RadioNavigator: Sendable {
     }
 
     private mutating func step(
-        _ delta: Int, walk: [Station], ring: Bool, current: Station?, nowMs: Int64
+        _ delta: Int, walk: [Station], ring: Bool,
+        currentIndex: Int?, current: Station?, nowMs: Int64
     ) -> RadioNavDecision {
         guard !walk.isEmpty else { return .ignore }
         let here: Int
@@ -95,6 +100,9 @@ public struct RadioNavigator: Sendable {
         if let pendingIndex {
             here = pendingIndex
             target = Self.ring(wrapIfNeeded: pendingIndex + delta, ring: ring, count: walk.count)
+        } else if let currentIndex, walk.indices.contains(currentIndex) {
+            here = currentIndex
+            target = Self.ring(wrapIfNeeded: currentIndex + delta, ring: ring, count: walk.count)
         } else if let current,
                   let index = walk.firstIndex(where: { $0.url == current.url }) {
             here = index
@@ -110,7 +118,7 @@ public struct RadioNavigator: Sendable {
         lastTapMs = nowMs
         if leadingEdge {
             pendingIndex = nil
-            return .play(walk[target])
+            return .play(walk[target], index: target)
         }
         pendingIndex = target
         return .schedule

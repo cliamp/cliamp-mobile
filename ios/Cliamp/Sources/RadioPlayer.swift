@@ -37,6 +37,12 @@ final class RadioPlayer {
     /// The session's active list: what a tap from a screen set, or the frozen
     /// fallback the first navigation promoted. Empty until then.
     private var source: [Station] = []
+    /// The occurrence of the audible station inside `source`; duplicates are
+    /// resolved by index, so "play next" of an existing URL cannot trap Next.
+    private var sourceIndex: Int?
+    /// Identity of the list the source came from, so a same-list tap preserves
+    /// the arranged tail while a different list replaces it.
+    private var sourceContextKey: String?
     /// True while navigation is walking the launch fallback as a ring.
     private var ringFallback = false
     /// Set when an audio interruption pauses something worth resuming.
@@ -131,18 +137,27 @@ final class RadioPlayer {
     }
 
     /// A play tapped on a screen hands navigation to that screen's list, the
-    /// same source identity Android's `play(station, from)` establishes. A tap
-    /// of something already in the active list keeps the list (and its order).
-    func play(_ station: Station, from list: [Station] = []) {
+    /// same source identity Android's `playFromList` establishes. A tap from
+    /// the same list plays now but keeps every pending entry in its existing
+    /// order; a tap from a different list replaces it.
+    func play(_ station: Station, from list: [Station] = [], contextKey: String? = nil) {
         navigator.cancelPending()
         navTask?.cancel()
         navTask = nil
-        if !list.isEmpty {
-            source = list
+        let sameList = contextKey != nil && contextKey == sourceContextKey && !source.isEmpty
+        if sameList,
+           let currentIndex = sourceIndex ?? source.firstIndex(where: { $0.url == self.station?.url }) {
+            // Insert the tapped occurrence right after the current one; the
+            // arranged tail keeps its order.
+            if source.indices.contains(currentIndex), source[currentIndex].url != station.url {
+                source.insert(station, at: currentIndex + 1)
+                sourceIndex = currentIndex + 1
+            }
+        } else {
+            source = list.isEmpty ? [station] : list
+            sourceContextKey = contextKey
             ringFallback = false
-        } else if !source.contains(where: { $0.url == station.url }) {
-            source = [station]
-            ringFallback = false
+            sourceIndex = source.firstIndex { $0.url == station.url } ?? 0
         }
         begin(station)
     }
@@ -314,6 +329,7 @@ final class RadioPlayer {
     func restore(_ station: Station) {
         guard self.station == nil else { return }
         self.station = station
+        sourceIndex = nil
         updateNavigationAvailability()
     }
 
@@ -321,19 +337,32 @@ final class RadioPlayer {
     /// "play next". The active list keeps its order; the playback position is
     /// untouched.
     func playNext(_ station: Station) {
-        if let current = self.station,
-           let index = source.firstIndex(where: { $0.url == current.url }) {
-            source.insert(station, at: index + 1)
-        } else {
-            source.append(station)
-        }
+        establishCurrentOccurrence()
+        let index = sourceIndex ?? 0
+        source.insert(station, at: min(index + 1, source.count))
         updateNavigationAvailability()
     }
 
     /// Append a station to the active list's end, the queue's "add to queue".
     func addToQueue(_ station: Station) {
+        establishCurrentOccurrence()
         source.append(station)
         updateNavigationAvailability()
+    }
+
+    /// A restored cold-launch station has no source yet; queuing must include
+    /// the audible item so Next still has somewhere to go.
+    private func establishCurrentOccurrence() {
+        guard let station else { return }
+        if source.isEmpty {
+            source = [station]
+            sourceIndex = 0
+            ringFallback = false
+            return
+        }
+        if sourceIndex == nil {
+            sourceIndex = source.firstIndex { $0.url == station.url } ?? 0
+        }
     }
 
     /// Steps forward: the redo tail first when walking the fallback, then the
@@ -346,9 +375,10 @@ final class RadioPlayer {
         // Redo only exists while walking the launch fallback; once a source
         // owns navigation it is linear, exactly like Android.
         switch navigator.next(
-            walk: walk, ring: ring, allowRedo: source.isEmpty, current: station, nowMs: nowMs()
+            walk: walk, ring: ring, allowRedo: source.isEmpty,
+            currentIndex: sourceIndex, current: station, nowMs: nowMs()
         ) {
-        case .play(let target): commitNavigation(target, walk: walk)
+        case .play(let target, let index): commitNavigation(target, index: index, walk: walk)
         case .schedule: schedulePending()
         case .ignore: break
         }
@@ -359,8 +389,10 @@ final class RadioPlayer {
         let walk = currentWalk()
         guard !walk.isEmpty else { return }
         let ring = isRing(walk)
-        switch navigator.previous(walk: walk, ring: ring, current: station, nowMs: nowMs()) {
-        case .play(let target): commitNavigation(target, walk: walk)
+        switch navigator.previous(
+            walk: walk, ring: ring, currentIndex: sourceIndex, current: station, nowMs: nowMs()
+        ) {
+        case .play(let target, let index): commitNavigation(target, index: index, walk: walk)
         case .schedule: schedulePending()
         case .ignore: break
         }
@@ -376,11 +408,14 @@ final class RadioPlayer {
     /// a frozen source the moment a step lands, exactly as Android's
     /// `startPlayback(..., preserveOrder = true)` does, so recency updates
     /// cannot reshuffle the walk under the next tap.
-    private func commitNavigation(_ target: Station, walk: [Station]) {
+    private func commitNavigation(_ target: Station, index: Int, walk: [Station]) {
         if source.isEmpty {
             source = walk
             ringFallback = true
         }
+        // The navigator chose an occurrence; when it was walking the active
+        // source that index is authoritative even with duplicate URLs.
+        sourceIndex = (walk.count == source.count) ? index : source.firstIndex(of: target)
         begin(target)
     }
 
@@ -391,8 +426,8 @@ final class RadioPlayer {
             guard !Task.isCancelled, let self else { return }
             self.navTask = nil
             let walk = self.currentWalk()
-            guard let target = self.navigator.takePending(walk: walk) else { return }
-            self.commitNavigation(target, walk: walk)
+            guard let pending = self.navigator.takePending(walk: walk) else { return }
+            self.commitNavigation(pending.station, index: pending.index, walk: walk)
         }
     }
 
@@ -407,7 +442,7 @@ final class RadioPlayer {
     private func updateNavigationAvailability() {
         let walk = currentWalk()
         let ring = isRing(walk)
-        let index = station.flatMap { current in
+        let index = sourceIndex ?? station.flatMap { current in
             walk.firstIndex { $0.url == current.url }
         } ?? -1
         hasPrev = ring || navigator.canGoBack || (index > 0)

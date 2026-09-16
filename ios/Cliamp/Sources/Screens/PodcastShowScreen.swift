@@ -58,8 +58,12 @@ struct PodcastShowScreen: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: 14) {
-                StationArtSquare(station: currentShow.artStation)
-                    .frame(width: 140, height: 140)
+                StationArtSquare(
+                    station: currentShow.artStation,
+                    corner: CliampShape.small,
+                    fallback: .podcast
+                )
+                .frame(width: 140, height: 140)
                     .overlay(
                         RoundedRectangle(cornerRadius: CliampShape.small)
                             .stroke(palette.frameBorder, lineWidth: 1)
@@ -127,7 +131,7 @@ struct PodcastShowScreen: View {
                     episode: episode,
                     station: station,
                     active: player.station?.url == station.url,
-                    playing: player.playing,
+                    playing: player.playing && player.station?.url == station.url,
                     progress: podcasts.progressEntry(for: station.url),
                     downloadState: downloads.state(for: station.url),
                     downloadedBytes: downloads.entry(for: station.url)?.bytes ?? 0,
@@ -149,7 +153,9 @@ struct PodcastShowScreen: View {
     private func play(_ episode: PodcastEpisode) {
         let stations = podcasts.episodes.map { $0.station(show: currentShow) }
         guard let station = stations.first(where: { $0.url == episode.audioUrl }) else { return }
-        player.play(station, from: stations)
+        // Same-show taps preserve the arranged tail; a different show replaces
+        // it, exactly like Android's playFromList.
+        player.play(station, from: stations, contextKey: "podcast:\(currentShow.feedUrl)")
     }
 
     private func toggleDownload(_ episode: PodcastEpisode) {
@@ -300,7 +306,7 @@ private struct EpisodeRow: View {
         var parts: [String] = []
         if !episode.isFull { parts.append(episode.type.lowercased()) }
         if episode.publishedAt > 0 { parts.append(PodcastEpisode.dateLabel(episode.publishedAt)) }
-        if episode.durationMs > 0 { parts.append(TimeFormat.clock(episode.durationMs)) }
+        if let duration = episode.durationLabel { parts.append(duration) }
         if fetched {
             parts.append("offline · \(downloadSizeLabel(downloadedBytes))")
         } else {

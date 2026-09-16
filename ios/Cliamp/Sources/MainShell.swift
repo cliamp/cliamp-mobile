@@ -71,6 +71,27 @@ struct MainShell: View {
                 // Settings is a page over the chrome too, like Android.
                 SettingsScreen(app: app, onBack: { showSettings = false })
             }
+
+            if !podcastPath.isEmpty {
+                // A show detail is a destination above the pager, the way
+                // Android pushes it over Home: the pager cannot be swiped
+                // underneath while it is open.
+                NavigationStack(path: $podcastPath) {
+                    Color.clear
+                        .navigationDestination(for: PodcastShow.self) { show in
+                            PodcastShowScreen(
+                                player: player,
+                                podcasts: PodcastServices.shared.podcasts,
+                                downloads: PodcastServices.shared.downloads,
+                                show: show,
+                                onOpenSearch: { showSearch = true },
+                                onOpenSettings: onOpenSettings
+                            )
+                            .toolbar(.hidden, for: .navigationBar)
+                        }
+                }
+                .toolbar(.hidden, for: .navigationBar)
+            }
         }
     }
 
@@ -85,31 +106,15 @@ struct MainShell: View {
 
     @ViewBuilder
     private var podcastsPage: some View {
-        // A detail screen stays inside the shell, the way Android keeps the
-        // mini player and tab bar under every pushed route.
-        NavigationStack(path: $podcastPath) {
-            PodcastsScreen(
-                player: player,
-                app: app,
-                podcasts: PodcastServices.shared.podcasts,
-                downloads: PodcastServices.shared.downloads,
-                onOpenSettings: onOpenSettings,
-                onOpenSearch: { showSearch = true },
-                onOpenShow: { podcastPath.append($0) }
-            )
-            .toolbar(.hidden, for: .navigationBar)
-            .navigationDestination(for: PodcastShow.self) { show in
-                PodcastShowScreen(
-                    player: player,
-                    podcasts: PodcastServices.shared.podcasts,
-                    downloads: PodcastServices.shared.downloads,
-                    show: show,
-                    onOpenSearch: { showSearch = true },
-                    onOpenSettings: onOpenSettings
-                )
-                .toolbar(.hidden, for: .navigationBar)
-            }
-        }
+        PodcastsScreen(
+            player: player,
+            app: app,
+            podcasts: PodcastServices.shared.podcasts,
+            downloads: PodcastServices.shared.downloads,
+            onOpenSettings: onOpenSettings,
+            onOpenSearch: { showSearch = true },
+            onOpenShow: { podcastPath = [$0] }
+        )
     }
 
     private func select(_ tab: AppTab) {
