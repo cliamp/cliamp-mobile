@@ -44,6 +44,12 @@ struct RootView: View {
             if arguments.contains("-cliamp-preview-playing") {
                 player.play(CliampRadio.builtin[0])
             }
+            if let index = arguments.firstIndex(of: "-cliamp-preview-url"), index + 1 < arguments.count,
+               let station = Station.custom(name: "preview", url: arguments[index + 1])
+            {
+                player.play(station)
+                showPlayer = true
+            }
             if arguments.contains("-cliamp-preview-settings") {
                 showSettings = true
             }
