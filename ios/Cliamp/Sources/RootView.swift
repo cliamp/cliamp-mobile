@@ -38,6 +38,8 @@ struct RootView: View {
         .task {
             player.onRecordPlay = { [app] station in app.recordPlay(station) }
             player.fallbackProvider = { [app] in app.fallbackStations }
+            player.onSpeedChange = { [app] value in app.speed = value }
+            player.setSpeed(app.speed)
             // Android restores the last station to the bus but never plays it
             // unless auto-resume is on: a radio app that starts making noise
             // on launch is a bad neighbour (RAD-12).

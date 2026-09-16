@@ -58,6 +58,11 @@ final class RadioPlayer {
     private(set) var buffering = false
     private(set) var error: String?
     private(set) var elapsedMs: Int64 = 0
+    /// Known only once a finite source is ready; live radio stays at 0.
+    private(set) var durationMs: Int64 = 0
+    private(set) var seekable = false
+    /// Playback speed multiplier, 0.5-2.0; applied live and persisted.
+    private(set) var speed = 1.0
     /// Amber recovery state: the first attempt starts at 1.
     private(set) var reconnecting = false
     private(set) var reconnectAttempt = 0
@@ -74,8 +79,23 @@ final class RadioPlayer {
     /// or favourites when history is empty.
     var fallbackProvider: (() -> [Station])?
 
+    /// The speed choice is persisted by the app state, the same split as
+    /// history and favourites.
+    var onSpeedChange: ((Double) -> Void)?
+
     private(set) var hasPrev = false
     private(set) var hasNext = false
+
+    /// A scrubber is only honest when there is a length to scrub through; a
+    /// live stream never offers one.
+    var scrubbable: Bool {
+        seekable && durationMs > 0 && !(station?.isTrack != true)
+    }
+
+    /// Whether the current source has no end (radio, HLS).
+    var isLive: Bool {
+        station?.isTrack != true
+    }
 
     private init() {
         timeControlObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
@@ -191,9 +211,13 @@ final class RadioPlayer {
             }
         }
         player.replaceCurrentItem(with: item)
+        player.defaultRate = Float(speed)
         // A stream resolved after the user already paused loads silently.
         if wantsToPlay {
             player.play()
+            if speed != 1 {
+                player.rate = Float(speed)
+            }
         }
         icy.start(url: url) { [weak self] title in
             Task { @MainActor [weak self] in
@@ -372,9 +396,52 @@ final class RadioPlayer {
         }
     }
 
+    // MARK: seek and speed
+
+    /// Seeks to an absolute position. Requests at or beyond the near-end
+    /// guard are ignored rather than clamped, matching Android.
+    func seek(toPositionMs positionMs: Int64) {
+        guard scrubbable, let item = player.currentItem else { return }
+        guard SeekPolicy.canSeek(positionMs: positionMs, durationMs: durationMs) else { return }
+        item.seek(
+            to: CMTime(value: CMTimeValue(positionMs), timescale: 1000),
+            toleranceBefore: .zero,
+            toleranceAfter: .zero,
+            completionHandler: nil
+        )
+    }
+
+    func seek(toFraction fraction: Double) {
+        guard durationMs > 0 else { return }
+        let clamped = min(max(fraction, 0), 1)
+        seek(toPositionMs: Int64(clamped * Double(durationMs)))
+    }
+
+    /// Applies a speed without persisting: the launch restore from the stored
+    /// default. One tap on the key goes through `cycleSpeed`.
+    func setSpeed(_ value: Double) {
+        speed = PlaybackSpeed.clamped(value)
+        player.defaultRate = Float(speed)
+        if wantsToPlay {
+            player.rate = Float(speed)
+        }
+        system?.refresh()
+    }
+
+    /// One tap on the speed key: step the ladder, persist, apply live.
+    func cycleSpeed() {
+        let next = PlaybackSpeed.next(after: speed)
+        onSpeedChange?(next)
+        setSpeed(next)
+    }
+
     private func apply(_ status: AVPlayer.TimeControlStatus) {
         buffering = status == .waitingToPlayAtSpecifiedRate
         playing = status == .playing
+        // Duration only exists once the source is ready; live radio stays at 0.
+        let seconds = player.currentItem.map { CMTimeGetSeconds($0.duration) } ?? 0
+        durationMs = seconds.isFinite && seconds > 0 ? Int64(seconds * 1000) : 0
+        seekable = durationMs > 0
         if buffering {
             if bufferingSinceMs == nil { bufferingSinceMs = nowMs() }
         } else {

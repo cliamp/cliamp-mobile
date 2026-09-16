@@ -18,6 +18,7 @@ struct AppStateTests {
         first.visualizer = "off"
         first.bufferSeconds = 45
         first.autoResume = true
+        first.speed = 1.25
 
         let second = AppState(defaults: defaults)
         #expect(second.palettePreference == "catppuccin")
@@ -27,6 +28,16 @@ struct AppStateTests {
         #expect(second.autoResume)
         #expect(second.cellular)
         #expect(!second.mono)
+        #expect(second.speed == 1.25)
+    }
+
+    @Test("a stored speed outside the range is clamped on load")
+    @MainActor
+    func speedClamp() {
+        let suite = "app-state-speed-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(3.0, forKey: "speed")
+        #expect(AppState(defaults: defaults).speed == 2)
     }
 
     @Test("favourites, history and the last station survive a relaunch")

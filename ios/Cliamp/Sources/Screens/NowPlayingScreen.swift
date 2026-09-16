@@ -120,6 +120,7 @@ struct NowPlayingScreen: View {
                 .foregroundStyle(statusColor)
             Spacer()
             smallAction(CliampIcons.shuffle, label: "shuffle", enabled: false, tint: palette.inkSecondary) {}
+            speedKey
             smallAction(CliampIcons.meterSmall, label: "scope and equaliser", enabled: false, tint: palette.inkSecondary) {}
             smallAction(
                 app.isFavorite(player.station ?? placeholder) ? CliampIcons.starFilled : CliampIcons.star,
@@ -151,6 +152,17 @@ struct NowPlayingScreen: View {
         return player.playing ? palette.accent : palette.inkSecondary
     }
 
+    /// The playback-speed key: taps step the Android ladder, accent when the
+    /// pace is not normal.
+    private var speedKey: some View {
+        Text(PlaybackSpeed.label(player.speed))
+            .cliampText(CliampType.meta)
+            .foregroundStyle(player.speed == 1 ? palette.inkSecondary : palette.accent)
+            .frame(width: 32, height: 32)
+            .microPress { player.cycleSpeed() }
+            .accessibilityLabel("playback speed")
+    }
+
     private func smallAction(
         _ icon: CliampVector, label: String, enabled: Bool, tint: Color, action: @escaping () -> Void
     ) -> some View {
@@ -166,17 +178,39 @@ struct NowPlayingScreen: View {
                 BrickMeter(levels: meter.levels, peaks: meter.peaks, preset: .nowPlaying)
                     .frame(maxWidth: .infinity)
             }
-            StreamingRule(streamingLabel, color: statusColor, dim: !player.playing && player.error == nil)
-            HStack {
-                Text(TimeFormat.clock(player.elapsedMs))
-                    .cliampText(CliampType.time)
-                    .foregroundStyle(palette.inkSecondary)
-                Spacer()
-                Text(player.playing ? "\(player.bufferedSeconds)s buffered" : "tap the meter for scope · eq")
-                    .cliampText(CliampType.timeSmall)
-                    .foregroundStyle(palette.inkFaint)
+            // What the transport shows follows what the source can do: a
+            // finite, seekable item scrubs; ICY radio streams.
+            if player.scrubbable, player.error == nil, !player.reconnecting {
+                MechSlider(
+                    value: player.durationMs > 0
+                        ? Double(player.elapsedMs) / Double(player.durationMs) : 0,
+                    range: 0...1
+                ) { fraction in
+                    player.seek(toFraction: fraction)
+                }
+                HStack {
+                    Text(TimeFormat.clock(player.elapsedMs))
+                        .cliampText(CliampType.time)
+                        .foregroundStyle(palette.inkSecondary)
+                    Spacer()
+                    Text("-" + TimeFormat.clock(max(0, player.durationMs - player.elapsedMs)))
+                        .cliampText(CliampType.time)
+                        .foregroundStyle(palette.inkSecondary)
+                }
+                .padding(.bottom, 6)
+            } else {
+                StreamingRule(streamingLabel, color: statusColor, dim: !player.playing && player.error == nil)
+                HStack {
+                    Text(TimeFormat.clock(player.elapsedMs))
+                        .cliampText(CliampType.time)
+                        .foregroundStyle(palette.inkSecondary)
+                    Spacer()
+                    Text(player.playing ? "\(player.bufferedSeconds)s buffered" : "tap the meter for scope · eq")
+                        .cliampText(CliampType.timeSmall)
+                        .foregroundStyle(palette.inkFaint)
+                }
+                .padding(.bottom, 6)
             }
-            .padding(.bottom, 6)
             GeometryReader { proxy in
                 let spacing = 9.0
                 let available = max(0, proxy.size.width - spacing * 2)

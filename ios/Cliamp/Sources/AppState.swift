@@ -17,6 +17,7 @@ final class AppState {
     var autoResume: Bool { didSet { defaults.set(autoResume, forKey: Keys.autoResume) } }
     var resumeLocalSongs: Bool { didSet { defaults.set(resumeLocalSongs, forKey: Keys.resumeLocal) } }
     var autoDownload: Bool { didSet { defaults.set(autoDownload, forKey: Keys.autoDownload) } }
+    var speed: Double { didSet { defaults.set(speed, forKey: Keys.speed) } }
 
     private(set) var favoriteURLs: Set<String> = []
     /// Newest first; the full stations, not just URLs, so the cold-launch
@@ -40,6 +41,7 @@ final class AppState {
         static let autoResume = "auto_resume"
         static let resumeLocal = "resume_local_songs"
         static let autoDownload = "auto_download"
+        static let speed = "speed"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -54,6 +56,7 @@ final class AppState {
         autoResume = defaults.bool(forKey: Keys.autoResume)
         resumeLocalSongs = defaults.bool(forKey: Keys.resumeLocal)
         autoDownload = defaults.bool(forKey: Keys.autoDownload)
+        speed = PlaybackSpeed.clamped(defaults.object(forKey: Keys.speed) as? Double ?? 1)
         favorites = library.favorites()
         favoriteURLs = Set(favorites.map(\.url))
         history = library.history()

@@ -33,9 +33,16 @@ final class SystemPlayback {
         info[MPMediaItemPropertyArtist] = player.streamTitle.isEmpty
             ? station.sourceLine : player.streamTitle
         info[MPMediaItemPropertyAlbumTitle] = station.meta
-        info[MPNowPlayingInfoPropertyIsLiveStream] = true
-        info[MPNowPlayingInfoPropertyPlaybackRate] = player.playing ? 1.0 : 0.0
-        info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = 1.0
+        info[MPNowPlayingInfoPropertyIsLiveStream] = player.isLive
+        info[MPNowPlayingInfoPropertyPlaybackRate] = player.playing ? player.speed : 0.0
+        info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = player.speed
+        if player.scrubbable {
+            info[MPMediaItemPropertyPlaybackDuration] = Double(player.durationMs) / 1000
+            info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = Double(player.elapsedMs) / 1000
+        } else {
+            info.removeValue(forKey: MPMediaItemPropertyPlaybackDuration)
+            info.removeValue(forKey: MPNowPlayingInfoPropertyElapsedPlaybackTime)
+        }
         center.nowPlayingInfo = info
         refreshCommands()
         refreshArtwork(for: station)
@@ -50,6 +57,7 @@ final class SystemPlayback {
         center.pauseCommand.isEnabled = player.wantsToPlay
         center.nextTrackCommand.isEnabled = player.hasNext
         center.previousTrackCommand.isEnabled = player.hasPrev
+        center.changePlaybackPositionCommand.isEnabled = player.scrubbable
     }
 
     private func refreshArtwork(for station: Station) {
@@ -98,6 +106,15 @@ final class SystemPlayback {
         }
         center.previousTrackCommand.addTarget { [weak self] _ in
             Task { @MainActor in self?.player?.goPrevious() }
+            return .success
+        }
+        center.changePlaybackPositionCommand.addTarget { [weak self] event in
+            guard let seek = event as? MPChangePlaybackPositionCommandEvent else {
+                return .commandFailed
+            }
+            Task { @MainActor in
+                self?.player?.seek(toPositionMs: Int64(seek.positionTime * 1000))
+            }
             return .success
         }
     }
