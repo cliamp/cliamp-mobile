@@ -46,7 +46,7 @@ Progress is **D / all scoped task rows**, with E and B reported separately. Spli
 
 | Phase | Deliverable | Depends on | Done / scoped | Exceptions | Blocked | State |
 | --- | --- | --- | --- | --- | --- | --- |
-| 0 | Reference evidence and feasible foundation | — | 0 / 5 | 0 | 0 | N |
+| 0 | Reference evidence and feasible foundation | — | 0 / 5 | 0 | 0 | W |
 | 1 | Recognizable cliamp shell and design system | 0 | 0 / 8 | 0 | 0 | N |
 | 2 | Radio works end to end, including background playback | 1; FND-03 audio spike; DEC-07 transport decision | 0 / 12 | 0 | 0 | N |
 | 3 | Queue, local library, playlists, and search | 2 | 0 / 13 | 0 | 0 | N |
@@ -81,7 +81,7 @@ References: NAV, DESIGN, PLAYER, PROVIDER, SYSTEM. Exit: a runnable iOS skeleton
 
 | ID | Work and acceptance criterion | State | F/V/X | Owner / evidence |
 | --- | --- | --- | --- | --- |
-| FND-01 | Choose minimum OS against DEC-03's surface requirements, iPhone sizes, iPad scope, stack, and device matrix. Create a locally runnable project and a macOS CI job with pinned runner/Xcode versions and an explicit signing approach; start with unsigned simulator build/test unless device CI is selected. Document commands in `ios/README.md`; update `AGENTS.md` for Android/iOS ownership and applicable Swift guidance without inventing installed skills. | N | —/—/— | — |
+| FND-01 | Choose minimum OS against DEC-03's surface requirements, iPhone sizes, iPad scope, stack, and device matrix. Create a locally runnable project and a macOS CI job with pinned runner/Xcode versions and an explicit signing approach; start with unsigned simulator build/test unless device CI is selected. Document commands in `ios/README.md`; update `AGENTS.md` for Android/iOS ownership and applicable Swift guidance without inventing installed skills. | R | P/NA/NA | 2026-09-16: XcodeGen scaffold at `d894f39`; iOS 18.0, universal iPhone/iPad, SwiftUI + Swift 6, app + local SPM packages; CI `macos-26` + Xcode 26.6 + XcodeGen 2.45.4 unsigned. F: P locally (unsigned build, 4 tests, simulator launch); V/X: NA (placeholder shell only). CI first run pending push. Evidence: [`docs/ios-parity-evidence/FND-01.md`](ios-parity-evidence/FND-01.md). |
 | FND-02 | Capture every reachable Android screen, overlay, menu, and major state against this commit; include portrait/landscape videos, navigation, defaults, and discrepancy decisions. Index fixtures/captures by task/scenario ID. Measure launch, tap-to-audio, scrolling, memory and battery under repeatable conditions, then record device-specific budgets and review tolerances for QA-04. | N | —/—/— | — |
 | FND-03 | First prove one live ICY MP3 stream with real playback FFT and continuous audio while the physical device is locked; verify metadata and foreground/background transitions. Then extend to seekable HTTP, local files, SFTP, EQ, mono and speed. Resolve public HTTP playlists/redirects/streams via DEC-07 and record the codec/container matrix before choosing the engine. The first spike alone does not complete this row. | N | —/—/— | — |
 | FND-04 | Prove secure credential storage, media-library versus Files access/reopen, local-network provider access, and interactive system surfaces on FND-01's minimum OS. Record constraints and experience differences in DEC-01–03, DEC-05 and DEC-07. | N | —/—/— | — |
@@ -307,6 +307,7 @@ Reviewer / date:
 
 | Date | IDs | Change | Evidence |
 | --- | --- | --- | --- |
+| 2026-09-16 | FND-01 | Scaffolded iOS app (XcodeGen, iOS 18, universal, SwiftUI + CliampCore package), pinned unsigned simulator CI, and updated `ios/README.md` / `AGENTS.md` with the recorded decisions. State R; CI first run pending push. | [`docs/ios-parity-evidence/FND-01.md`](ios-parity-evidence/FND-01.md); scaffold at `d894f39` |
 | 2026-09-16 | all | Created source-audited baseline and phased execution tracker. No iOS implementation or device verification claimed. | Android `21782fd233b4ab089dc1e6ea56e758a2aa2a8477`; source map above |
 | 2026-09-16 | FND, RAD, QUE, LIB, SRC, VIS-08, SET, AUD, SYS, QA, DEC-07 | Incorporated all 15 Claude review findings into existing rows: corrected channel/search/buffer claims, added boundary fixtures and shuffle/cold-start coverage, clarified local-library differences, CI/signing/routing work, OS floors and early transport decisions. Added precise queue-test references, alpha-first theme coverage and all 17 EQ presets. Refined review wording: near-end seeks are rejected; shuffle restores the saved base, which edits can update; fallback ring requires multiple items. Removed the separate review document. | Rechecked Android source and linked Apple documentation; total remains 72 tasks / 67 product tasks, all unverified. Listener counts removed as an erroneous requirement; no task IDs added or removed. |
 
