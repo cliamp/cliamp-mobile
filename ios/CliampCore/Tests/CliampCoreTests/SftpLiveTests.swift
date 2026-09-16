@@ -100,6 +100,22 @@ struct SftpLiveTests {
         }
     }
 
+    @Test("the listing channel recycles and reads keep working")
+    func recycling() async throws {
+        let session = SshSession(config: sshConfig(values()))
+        defer { Task { await session.close() } }
+        for _ in 0..<205 {
+            _ = try await session.list(Self.root)
+        }
+        #expect(await session.listingRecycles >= 1)
+        // A read after recycling still works: the read channel is separate.
+        let bytes = try await session.read(
+            "\(Self.root)/loose track.m4a", offset: 0, length: 16
+        )
+        #expect(bytes.count == 16)
+        #expect(try await session.list(Self.root).isEmpty == false)
+    }
+
     @Test("a missing directory is classified recoverable, not fatal")
     func missingDirectory() async throws {
         let session = SshSession(config: sshConfig(values()))

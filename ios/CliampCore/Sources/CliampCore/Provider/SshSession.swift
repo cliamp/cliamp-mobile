@@ -122,6 +122,8 @@ private final class SshTransport: @unchecked Sendable {
     var listSftp: SFTPClient
     var listingsSinceRecycle = 0
     var listingsInFlight = 0
+    /// True while the listing channel is being replaced; new listings wait.
+    var replacing = false
 
     init(
         group: MultiThreadedEventLoopGroup,
@@ -162,6 +164,9 @@ public actor SshSession: RemoteFileTree {
 
     /// The fingerprint this session pinned or confirmed, once connected.
     public private(set) var fingerprint: String?
+    /// How many times the listing channel has been replaced to reclaim leaked
+    /// directory handles; tests assert the recycling actually runs.
+    public private(set) var listingRecycles = 0
 
     public init(config: SshConfig) {
         self.config = config
@@ -260,6 +265,9 @@ public actor SshSession: RemoteFileTree {
             return
         }
         transport.listingsSinceRecycle = 0
+        transport.replacing = true
+        listingRecycles += 1
+        defer { transport.replacing = false }
         try? await transport.listSftp.close()
         do {
             transport.listSftp = try await transport.client.openSFTP()
@@ -339,41 +347,62 @@ public actor SshSession: RemoteFileTree {
 
     public func list(_ path: String) async throws -> [RemoteEntry] {
         let transport = try await channel()
+        await waitForReplacement(transport)
         transport.listingsInFlight += 1
-        defer {
-            transport.listingsInFlight -= 1
-            transport.listingsSinceRecycle += 1
-        }
+        let names: [SFTPMessage.Name]
         do {
-            let names = try await transport.listSftp.listDirectory(atPath: path)
-            await recycleListingsIfNeeded(transport)
-            var entries: [RemoteEntry] = []
-            // One NAME response can hold several entries (asyncssh batches
-            // them), so every component counts, not just the message's last.
-            for name in names {
-                for component in name.components {
-                    let filename = component.filename
-                    guard filename != ".", filename != "..", !filename.isEmpty else { continue }
-                    entries.append(Self.entry(
-                        path: path,
-                        name: filename,
-                        attributes: component.attributes,
-                        longname: component.longname
-                    ))
-                }
-            }
-            return entries
+            names = try await transport.listSftp.listDirectory(atPath: path)
         } catch {
+            transport.listingsInFlight -= 1
             if error is CancellationError { throw CancellationError() }
             // A refused or vanished directory arrives as a STATUS response to
-            // our request: a per-directory problem the scan skips. Everything
-            // else (connection closed, protocol errors) must propagate.
-            if let status = error as? SFTPMessage.Status {
+            // our request: a per-directory problem the scan skips. Protocol
+            // and connection statuses are not that, and must propagate.
+            if let status = error as? SFTPMessage.Status, Self.isRecoverable(status) {
                 throw SshError.directoryUnreadable(
                     status.message.isEmpty ? "cannot list \(path)" : status.message
                 )
             }
             throw Self.failure(error)
+        }
+        transport.listingsInFlight -= 1
+        transport.listingsSinceRecycle += 1
+        await recycleListingsIfNeeded(transport)
+
+        var entries: [RemoteEntry] = []
+        // One NAME response can hold several entries (asyncssh batches them),
+        // so every component counts, not just the message's last.
+        for name in names {
+            for component in name.components {
+                let filename = component.filename
+                guard filename != ".", filename != "..", !filename.isEmpty else { continue }
+                entries.append(Self.entry(
+                    path: path,
+                    name: filename,
+                    attributes: component.attributes,
+                    longname: component.longname
+                ))
+            }
+        }
+        return entries
+    }
+
+    /// Directory failures worth skipping mid-walk; anything else (bad
+    /// message, connection lost, unknown codes) fails the scan instead of
+    /// silently producing a partial index.
+    static func isRecoverable(_ status: SFTPMessage.Status) -> Bool {
+        switch status.errorCode {
+        case .noSuchFile, .permissionDenied, .unsupportedOperation:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Listings wait out a channel replacement rather than failing on it.
+    private func waitForReplacement(_ transport: SshTransport) async {
+        while transport.replacing {
+            try? await Task.sleep(for: .milliseconds(10))
         }
     }
 
