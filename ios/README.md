@@ -1,6 +1,9 @@
 # cliamp ios
 
-Nothing here yet.
+The iOS client is not implemented yet. The [iOS parity plan and progress
+tracker](../docs/ios-parity.md) defines the Android baseline, phased work,
+acceptance criteria, and remaining platform decisions. Start there when
+implementing or reviewing the port, and update its task IDs as work lands.
 
 Two things worth reading before anything lands here:
 [`../docs/design.md`](../docs/design.md), which is the design system the Android
