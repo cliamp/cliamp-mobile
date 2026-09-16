@@ -10,7 +10,7 @@ struct PodcastShowScreen: View {
     let podcasts: PodcastsModel
     let downloads: DownloadManager
     let show: PodcastShow
-    let onClose: () -> Void
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(spacing: 0) {
@@ -30,7 +30,7 @@ struct PodcastShowScreen: View {
 
     private var topRow: some View {
         HStack(spacing: 8) {
-            BackChevron(action: onClose)
+            BackChevron { dismiss() }
             Spacer()
             CliampIcon(CliampIcons.download, size: 16, tint: palette.inkSecondary)
                 .frame(width: 32, height: 32)

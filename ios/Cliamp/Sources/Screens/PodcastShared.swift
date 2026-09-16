@@ -113,8 +113,11 @@ struct ShowRow: View {
                 StationArtView(station: show.artStation, size: 40, fallback: .glyph)
             },
             trailing: {
-                if let onToggleSubscribe {
-                    SubscribeStar(subscribed: subscribed, action: onToggleSubscribe)
+                HStack(spacing: 12) {
+                    if let onToggleSubscribe {
+                        SubscribeStar(subscribed: subscribed, action: onToggleSubscribe)
+                    }
+                    CliampIcon(CliampIcons.caretRight, size: 9, tint: palette.inkFaint)
                 }
             },
             verticalPadding: 9,

@@ -33,7 +33,10 @@ final class PodcastsModel {
         }
     }
 
-    private(set) var query: Query = .top(country: "us")
+    private(set) var query: Query = .top(country: "")
+    /// The last selected top-chart country ("" is all countries), kept apart
+    /// from the query so genre/search panes remember it.
+    private(set) var country = ""
     private(set) var shows: [PodcastShow] = []
     private(set) var loading = false
     private(set) var exhausted = false
@@ -84,7 +87,7 @@ final class PodcastsModel {
         guard !started else { return }
         started = true
         reloadLibrary()
-        load(.top(country: "us"), reset: true)
+        load(.top(country: ""), reset: true)
         Task { countries = await countryClient.topCountries() }
     }
 
@@ -126,6 +129,9 @@ final class PodcastsModel {
         defer { if !reset { pageInFlight = false } }
         if reset {
             self.query = query
+            if case .top(let code) = query {
+                country = code
+            }
             loading = true
             exhausted = false
             error = nil

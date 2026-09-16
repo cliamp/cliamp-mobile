@@ -10,7 +10,7 @@ struct RootView: View {
     @State private var tab: AppTab = .stations
     @State private var showSettings = false
     @State private var showPlayer = false
-    @State private var openPodcast: PodcastShow?
+    @State private var podcastPath: [PodcastShow] = []
 
     var body: some View {
         let palette = cliampPalette(for: app.palettePreference, systemDark: systemScheme == .dark)
@@ -20,7 +20,7 @@ struct RootView: View {
             app: app,
             onOpenSettings: { showSettings = true },
             onOpenPlayer: { showPlayer = true },
-            onOpenPodcast: { openPodcast = $0 }
+            podcastPath: $podcastPath
         )
         .cliampTheme(palette)
         .environment(\.cliampHapticsEnabled, app.haptics)
@@ -37,17 +37,7 @@ struct RootView: View {
                 .cliampTheme(palette)
                 .environment(\.cliampHapticsEnabled, app.haptics)
         }
-        .fullScreenCover(item: $openPodcast) { show in
-            PodcastShowScreen(
-                player: player,
-                podcasts: PodcastServices.shared.podcasts,
-                downloads: PodcastServices.shared.downloads,
-                show: show,
-                onClose: { openPodcast = nil }
-            )
-            .cliampTheme(palette)
-            .environment(\.cliampHapticsEnabled, app.haptics)
-        }
+
         .task {
             player.onRecordPlay = { [app] station in app.recordPlay(station) }
             player.fallbackProvider = { [app] in app.fallbackStations }
@@ -95,6 +85,9 @@ struct RootView: View {
             if arguments.contains("-cliamp-preview-settings") {
                 showSettings = true
             }
+            if arguments.contains("-cliamp-preview-pods") {
+                tab = .pods
+            }
             if let index = arguments.firstIndex(of: "-cliamp-preview-podcast"),
                index + 1 < arguments.count
             {
@@ -109,7 +102,8 @@ struct RootView: View {
                         resolved = try? await PodcastDirectory.lookup(ids: [reference]).first
                     }
                     guard let show = resolved else { return }
-                    openPodcast = show
+                    tab = .pods
+                    podcastPath.append(show)
                     let services = PodcastServices.shared
                     services.podcasts.openShow(show, force: true)
                     for _ in 0..<40 where services.podcasts.episodes.isEmpty {

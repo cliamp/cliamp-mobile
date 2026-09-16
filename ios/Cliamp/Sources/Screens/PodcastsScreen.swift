@@ -15,6 +15,7 @@ struct PodcastsScreen: View {
 
     @State private var pane: Pane = .all
     @State private var searchText = ""
+    @FocusState private var searchFocused: Bool
 
     enum Pane: String, CaseIterable, Identifiable {
         case all
@@ -26,7 +27,12 @@ struct PodcastsScreen: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            CliampHeader("Podcasts", onSettings: onOpenSettings) {
+            CliampHeader("Podcasts", onSearch: {
+                // The header key is the global search's doorway on Android;
+                // until that screen lands it opens the directory's field.
+                pane = .directory
+                searchFocused = true
+            }, onSettings: onOpenSettings) {
                 chips
             }
             ScrollView {
@@ -91,7 +97,8 @@ struct PodcastsScreen: View {
     }
 
     private var currentCountryName: String? {
-        guard case .top(let code) = podcasts.query, !code.isEmpty else { return nil }
+        let code = podcasts.country
+        guard !code.isEmpty else { return nil }
         return podcasts.countries.first { $0.iso3166.caseInsensitiveCompare(code) == .orderedSame }?.name
             ?? code.uppercased()
     }
@@ -160,7 +167,7 @@ struct PodcastsScreen: View {
         ScrollView(.horizontal) {
             HStack(spacing: 7) {
                 Chip("top", selected: isTopQuery) {
-                    podcasts.load(.top(country: currentCountryCode), reset: true)
+                    podcasts.load(.top(country: podcasts.country), reset: true)
                 }
                 ForEach(PodcastDirectory.genres) { genre in
                     Chip(genre.name.lowercased(), selected: podcasts.query == .category(genre)) {
@@ -182,8 +189,7 @@ struct PodcastsScreen: View {
     }
 
     private var currentCountryCode: String {
-        if case .top(let code) = podcasts.query { return code }
-        return "us"
+        podcasts.country
     }
 
     private var searchField: some View {
@@ -193,6 +199,7 @@ struct PodcastsScreen: View {
                 .cliampText(CliampType.rowPrimary)
                 .foregroundStyle(palette.ink)
                 .textFieldStyle(.plain)
+                .focused($searchFocused)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
                 .submitLabel(.search)
@@ -203,7 +210,7 @@ struct PodcastsScreen: View {
                     .contentShape(Rectangle())
                     .onTapGesture {
                         searchText = ""
-                        podcasts.load(.top(country: currentCountryCode), reset: true)
+                        podcasts.load(.top(country: podcasts.country), reset: true)
                     }
             }
         }

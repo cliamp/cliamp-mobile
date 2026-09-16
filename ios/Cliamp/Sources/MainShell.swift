@@ -12,7 +12,7 @@ struct MainShell: View {
     let app: AppState
     let onOpenSettings: () -> Void
     let onOpenPlayer: () -> Void
-    let onOpenPodcast: (PodcastShow) -> Void
+    @Binding var podcastPath: [PodcastShow]
 
     var body: some View {
         GeometryReader { proxy in
@@ -42,14 +42,28 @@ struct MainShell: View {
         case .stations:
             StationsScreen(player: player, app: app, onOpenSettings: onOpenSettings)
         case .pods:
-            PodcastsScreen(
-                player: player,
-                app: app,
-                podcasts: PodcastServices.shared.podcasts,
-                downloads: PodcastServices.shared.downloads,
-                onOpenSettings: onOpenSettings,
-                onOpenShow: onOpenPodcast
-            )
+            // A detail screen stays inside the shell, the way Android keeps
+            // the mini player and tab bar under every pushed route.
+            NavigationStack(path: $podcastPath) {
+                PodcastsScreen(
+                    player: player,
+                    app: app,
+                    podcasts: PodcastServices.shared.podcasts,
+                    downloads: PodcastServices.shared.downloads,
+                    onOpenSettings: onOpenSettings,
+                    onOpenShow: { podcastPath.append($0) }
+                )
+                .toolbar(.hidden, for: .navigationBar)
+                .navigationDestination(for: PodcastShow.self) { show in
+                    PodcastShowScreen(
+                        player: player,
+                        podcasts: PodcastServices.shared.podcasts,
+                        downloads: PodcastServices.shared.downloads,
+                        show: show
+                    )
+                    .toolbar(.hidden, for: .navigationBar)
+                }
+            }
         case .library:
             PlaceholderTab(title: "Library")
         }
