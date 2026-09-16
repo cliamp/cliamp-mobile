@@ -1,7 +1,7 @@
 import Foundation
 
 /// Where a station came from. Drives both grouping and the accent it gets.
-public enum StationSource: String, Sendable, CaseIterable {
+public enum StationSource: String, Sendable, Codable, CaseIterable {
     case cliamp = "Cliamp"
     case directory = "Directory"
     case custom = "Custom"
@@ -10,7 +10,7 @@ public enum StationSource: String, Sendable, CaseIterable {
     case podcast = "Podcast"
 }
 
-public struct Station: Identifiable, Hashable, Sendable {
+public struct Station: Identifiable, Hashable, Sendable, Codable {
     public let id: String
     public var name: String
     public var url: String
