@@ -9,11 +9,11 @@ public enum RadioNavDecision: Equatable, Sendable {
     case ignore
 }
 
-/// Session navigation for radio: the ring prev/next walks before an explicit
-/// source list exists (recent history, or favourites when history is empty),
-/// plus the log of what was actually heard. A port of the fallback half of
-/// Android's `PlayerConnection` `recordPlay` / `prev` / `next` / `step`,
-/// including the 180 ms burst debounce and the 100-entry cap.
+/// Session navigation for radio: the list prev/next walks (an explicit source
+/// after a tap from a list, the launch fallback of recent history or
+/// favourites before that) plus the log of what was actually heard. A port of
+/// the navigation half of Android's `PlayerConnection` `recordPlay` / `prev` /
+/// `next` / `step`, including the 180 ms burst debounce and the 100-entry cap.
 public struct RadioNavigator: Sendable {
     /// A burst of taps within this window settles on the last one.
     public static let debounceWindowMs: Int64 = 180
@@ -43,40 +43,42 @@ public struct RadioNavigator: Sendable {
         }
     }
 
-    /// Next follows the redo tail first, then the fallback ring.
+    /// Next follows the redo tail first when walking the launch fallback, then
+    /// the ring. An explicit source is linear, exactly like Android's
+    /// `_source.isNotEmpty()` shortcut.
     public mutating func next(
-        stations: [Station], current: Station?, nowMs: Int64
+        walk: [Station], ring: Bool, current: Station?, nowMs: Int64
     ) -> RadioNavDecision {
-        if canGoForward {
+        if ring, canGoForward {
             pastIndex += 1
             cancelPending()
             return .play(past[pastIndex])
         }
-        return step(+1, stations: stations, current: current, nowMs: nowMs)
+        return step(+1, walk: walk, ring: ring, current: current, nowMs: nowMs)
     }
 
-    /// Previous walks what was actually heard, falling back to the ring only
-    /// at the bottom of the stack.
+    /// Previous walks what was actually heard, falling back to the walked list
+    /// only at the bottom of the stack.
     public mutating func previous(
-        stations: [Station], current: Station?, nowMs: Int64
+        walk: [Station], ring: Bool, current: Station?, nowMs: Int64
     ) -> RadioNavDecision {
         if canGoBack {
             pastIndex -= 1
             cancelPending()
             return .play(past[pastIndex])
         }
-        return step(-1, stations: stations, current: current, nowMs: nowMs)
+        return step(-1, walk: walk, ring: ring, current: current, nowMs: nowMs)
     }
 
     /// The coalesced target once a burst's timer fires, or nil when nothing
     /// is pending.
-    public mutating func takePending(stations: [Station]) -> Station? {
-        guard let index = pendingIndex, !stations.isEmpty else {
+    public mutating func takePending(walk: [Station]) -> Station? {
+        guard let index = pendingIndex, !walk.isEmpty else {
             pendingIndex = nil
             return nil
         }
         pendingIndex = nil
-        return stations[Self.wrap(index, count: stations.count)]
+        return walk[Self.wrap(index, count: walk.count)]
     }
 
     /// A fresh explicit play supersedes any coalescing burst still waiting.
@@ -85,22 +87,22 @@ public struct RadioNavigator: Sendable {
     }
 
     private mutating func step(
-        _ delta: Int, stations: [Station], current: Station?, nowMs: Int64
+        _ delta: Int, walk: [Station], ring: Bool, current: Station?, nowMs: Int64
     ) -> RadioNavDecision {
-        guard !stations.isEmpty else { return .ignore }
+        guard !walk.isEmpty else { return .ignore }
         let here: Int
         let target: Int
         if let pendingIndex {
             here = pendingIndex
-            target = Self.wrap(pendingIndex + delta, count: stations.count)
+            target = Self.ring(wrapIfNeeded: pendingIndex + delta, ring: ring, count: walk.count)
         } else if let current,
-                  let index = stations.firstIndex(where: { $0.url == current.url }) {
+                  let index = walk.firstIndex(where: { $0.url == current.url }) {
             here = index
-            target = Self.wrap(index + delta, count: stations.count)
+            target = Self.ring(wrapIfNeeded: index + delta, ring: ring, count: walk.count)
         } else {
-            // Nothing audible in the ring yet: walk from its first item.
+            // Nothing audible in this list yet: walk from its first item.
             here = 0
-            target = min(max(delta, 0), stations.count - 1)
+            target = delta > 0 ? min(1, walk.count - 1) : 0
         }
         if target == here, pendingIndex == nil { return .ignore }
 
@@ -108,10 +110,14 @@ public struct RadioNavigator: Sendable {
         lastTapMs = nowMs
         if leadingEdge {
             pendingIndex = nil
-            return .play(stations[target])
+            return .play(walk[target])
         }
         pendingIndex = target
         return .schedule
+    }
+
+    private static func ring(wrapIfNeeded index: Int, ring: Bool, count: Int) -> Int {
+        ring ? wrap(index, count: count) : min(max(index, 0), count - 1)
     }
 
     private static func wrap(_ index: Int, count: Int) -> Int {

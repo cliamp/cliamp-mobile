@@ -11,8 +11,6 @@ import UIKit
 final class SystemPlayback {
     private weak var player: RadioPlayer?
     private var artworkTask: Task<Void, Never>?
-    /// Whether an interruption paused audio that should resume afterwards.
-    private var interrupted = false
 
     init(player: RadioPlayer) {
         self.player = player
@@ -46,8 +44,10 @@ final class SystemPlayback {
     private func refreshCommands() {
         guard let player else { return }
         let center = MPRemoteCommandCenter.shared()
-        center.playCommand.isEnabled = player.station != nil && !player.playing
-        center.pauseCommand.isEnabled = player.playing
+        // Availability follows intent, not audibility: during a buffer stall
+        // the lock screen must still offer Pause.
+        center.playCommand.isEnabled = player.station != nil && !player.wantsToPlay
+        center.pauseCommand.isEnabled = player.wantsToPlay
         center.nextTrackCommand.isEnabled = player.hasNext
         center.previousTrackCommand.isEnabled = player.hasPrev
     }
@@ -133,15 +133,12 @@ final class SystemPlayback {
         else { return }
         switch type {
         case .began:
-            // Only audio that was actually playing should come back.
-            interrupted = player.playing
-            player.pause()
+            player.pauseFromInterruption()
         case .ended:
             let options = AVAudioSession.InterruptionOptions(rawValue: rawOptions ?? 0)
-            if interrupted, options.contains(.shouldResume) {
+            if player.takeInterruptionResumeWanted(), options.contains(.shouldResume) {
                 player.resume()
             }
-            interrupted = false
         @unknown default:
             break
         }

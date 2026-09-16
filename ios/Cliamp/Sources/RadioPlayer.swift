@@ -9,9 +9,15 @@ import os
 /// The engine is deliberately small until FND-03 picks the final audio stack;
 /// what it proves today is live radio with a real transport, a reconnect
 /// ladder and the lock screen.
+///
+/// A process-wide singleton: SwiftUI can rebuild the root view as often as it
+/// likes without standing up a second AVPlayer, remote-command set, watchdog
+/// or network monitor.
 @MainActor
 @Observable
 final class RadioPlayer {
+    static let shared = RadioPlayer()
+
     private let player = AVPlayer()
     private let errorLog = Logger(subsystem: "stream.cliamp.mobile", category: "player")
     private let icy = IcyMetadataReader()
@@ -28,9 +34,13 @@ final class RadioPlayer {
     private var watchdog: Timer?
     private var bufferingSinceMs: Int64?
     private var pathMonitor: NWPathMonitor?
-    /// The user's intent, the iOS counterpart of Android's `playWhenReady`:
-    /// true through buffering and failures until pause.
-    private var playsWhenReady = false
+    /// The session's active list: what a tap from a screen set, or the frozen
+    /// fallback the first navigation promoted. Empty until then.
+    private var source: [Station] = []
+    /// True while navigation is walking the launch fallback as a ring.
+    private var ringFallback = false
+    /// Set when an audio interruption pauses something worth resuming.
+    private var resumeAfterInterruption = false
 
     /// The latest 64-band FFT frame from the audio thread, empty when nothing
     /// is flowing. The meters read it; nothing else should.
@@ -46,20 +56,23 @@ final class RadioPlayer {
     /// Amber recovery state: the first attempt starts at 1.
     private(set) var reconnecting = false
     private(set) var reconnectAttempt = 0
+    /// The user's intent, the iOS counterpart of Android's `playWhenReady`:
+    /// true through buffering and failures until pause. The transport glyphs
+    /// follow this, not audibility.
+    private(set) var wantsToPlay = false
 
     /// Called on every user-initiated play so history and the last station
     /// reach persistence at one choke point (RAD-12).
     var onRecordPlay: ((Station) -> Void)?
 
-    /// Where prev/next walk when no explicit source list exists: recent
-    /// history, or favourites when history is empty. Read live so a new
-    /// favourite is navigable without a copy going stale.
+    /// Where prev/next walk before an explicit source exists: recent history,
+    /// or favourites when history is empty.
     var fallbackProvider: (() -> [Station])?
 
     private(set) var hasPrev = false
     private(set) var hasNext = false
 
-    init() {
+    private init() {
         timeControlObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
             let status = player.timeControlStatus
             Task { @MainActor [weak self] in
@@ -71,10 +84,20 @@ final class RadioPlayer {
         startNetworkMonitor()
     }
 
-    func play(_ station: Station) {
+    /// A play tapped on a screen hands navigation to that screen's list, the
+    /// same source identity Android's `play(station, from)` establishes. A tap
+    /// of something already in the active list keeps the list (and its order).
+    func play(_ station: Station, from list: [Station] = []) {
         navigator.cancelPending()
         navTask?.cancel()
         navTask = nil
+        if !list.isEmpty {
+            source = list
+            ringFallback = false
+        } else if !source.contains(where: { $0.url == station.url }) {
+            source = [station]
+            ringFallback = false
+        }
         begin(station)
     }
 
@@ -86,7 +109,8 @@ final class RadioPlayer {
         elapsedMs = 0
         bufferedSeconds = 0
         streamTitle = ""
-        playsWhenReady = true
+        wantsToPlay = true
+        resumeAfterInterruption = false
         guard let url = URL(string: station.url) else {
             error = "couldn't play that stream"
             updateNavigationAvailability()
@@ -105,7 +129,9 @@ final class RadioPlayer {
     private func startStream(station: Station, url: URL) {
         icy.stop()
         spectrum.clear()
-        bufferingSinceMs = nil
+        // A replacement stream gets a fresh stall deadline; if the previous
+        // status was buffering, no status change will re-arm it.
+        bufferingSinceMs = wantsToPlay ? nowMs() : nil
         let item = AVPlayerItem(url: url)
         // A post-effects tap gives the meters the PCM that is actually
         // playing, for the real FFT. If the tap cannot attach, the meter
@@ -128,8 +154,12 @@ final class RadioPlayer {
             let status = item.status
             let message = item.error?.localizedDescription
             let error = item.error as NSError?
+            let identity = ObjectIdentifier(item)
             Task { @MainActor [weak self] in
-                guard let self, status == .failed, let error else { return }
+                guard let self, status == .failed, let error,
+                      let current = self.player.currentItem,
+                      ObjectIdentifier(current) == identity
+                else { return }
                 self.errorLog.error(
                     "item failed code=\(error.code, privacy: .public) domain=\(error.domain, privacy: .public) underlying=\(String(describing: error.userInfo[NSUnderlyingErrorKey]), privacy: .public)"
                 )
@@ -149,7 +179,7 @@ final class RadioPlayer {
     /// A failed item either enters the backoff ladder or surfaces a stable
     /// error: malformed containers and unsupported codecs are not retried.
     private func handleStreamFailure(_ failure: NSError, message: String?) {
-        if playsWhenReady, ReconnectPolicy.isRecoverable(failure) {
+        if wantsToPlay, ReconnectPolicy.isRecoverable(failure) {
             scheduleRetry(reason: "error \(failure.code)")
             return
         }
@@ -168,24 +198,27 @@ final class RadioPlayer {
         updateNavigationAvailability()
     }
 
-    /// Steps forward: the redo tail first, then the fallback ring. An isolated
-    /// tap lands immediately; a burst settles on the final target.
+    /// Steps forward: the redo tail first when walking the fallback, then the
+    /// walked list. An isolated tap lands immediately; a burst settles on the
+    /// final target.
     func goNext() {
-        let stations = fallback()
-        guard !stations.isEmpty else { return }
-        switch navigator.next(stations: stations, current: station, nowMs: nowMs()) {
-        case .play(let target): begin(target)
+        let walk = currentWalk()
+        guard !walk.isEmpty else { return }
+        let ring = isRing(walk)
+        switch navigator.next(walk: walk, ring: ring, current: station, nowMs: nowMs()) {
+        case .play(let target): commitNavigation(target, walk: walk)
         case .schedule: schedulePending()
         case .ignore: break
         }
     }
 
-    /// Steps back through what was heard this session, then the ring.
+    /// Steps back through what was heard this session, then the walked list.
     func goPrevious() {
-        let stations = fallback()
-        guard !stations.isEmpty else { return }
-        switch navigator.previous(stations: stations, current: station, nowMs: nowMs()) {
-        case .play(let target): begin(target)
+        let walk = currentWalk()
+        guard !walk.isEmpty else { return }
+        let ring = isRing(walk)
+        switch navigator.previous(walk: walk, ring: ring, current: station, nowMs: nowMs()) {
+        case .play(let target): commitNavigation(target, walk: walk)
         case .schedule: schedulePending()
         case .ignore: break
         }
@@ -197,21 +230,47 @@ final class RadioPlayer {
         updateNavigationAvailability()
     }
 
+    /// A navigation target is committed: the launch fallback is promoted into
+    /// a frozen source the moment a step lands, exactly as Android's
+    /// `startPlayback(..., preserveOrder = true)` does, so recency updates
+    /// cannot reshuffle the walk under the next tap.
+    private func commitNavigation(_ target: Station, walk: [Station]) {
+        if source.isEmpty {
+            source = walk
+            ringFallback = true
+        }
+        begin(target)
+    }
+
     private func schedulePending() {
         navTask?.cancel()
         navTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(Int(RadioNavigator.debounceWindowMs)))
             guard !Task.isCancelled, let self else { return }
             self.navTask = nil
-            guard let target = self.navigator.takePending(stations: self.fallback()) else { return }
-            self.begin(target)
+            let walk = self.currentWalk()
+            guard let target = self.navigator.takePending(walk: walk) else { return }
+            self.commitNavigation(target, walk: walk)
         }
     }
 
+    private func currentWalk() -> [Station] {
+        source.isEmpty ? fallback() : source
+    }
+
+    private func isRing(_ walk: [Station]) -> Bool {
+        walk.count > 1 && (source.isEmpty || ringFallback)
+    }
+
     private func updateNavigationAvailability() {
-        let ring = fallback().count > 1
-        hasPrev = ring || navigator.canGoBack
-        hasNext = ring || navigator.canGoForward
+        let walk = currentWalk()
+        let ring = isRing(walk)
+        let index = station.flatMap { current in
+            walk.firstIndex { $0.url == current.url }
+        } ?? -1
+        hasPrev = ring || navigator.canGoBack || (index > 0)
+        hasNext = ring || (source.isEmpty && navigator.canGoForward)
+            || (index >= 0 && index < walk.count - 1)
     }
 
     private func fallback() -> [Station] {
@@ -224,33 +283,54 @@ final class RadioPlayer {
     }
 
     func toggle() {
-        if playing {
+        if wantsToPlay {
             pause()
         } else {
             resume()
         }
     }
 
-    /// An explicit pause: the lock screen and interruptions land here too.
+    /// An explicit pause: the lock screen and the app's transport land here.
     func pause() {
         guard station != nil else { return }
-        playsWhenReady = false
+        wantsToPlay = false
+        resumeAfterInterruption = false
         player.pause()
         icy.stop()
+        navigator.cancelPending()
+        navTask?.cancel()
+        navTask = nil
         cancelRecovery()
         system?.refresh()
     }
 
-    /// Resumes the loaded item, rebuilding it only when the last one failed.
+    /// Pauses for an audio interruption, remembering whether audio was wanted
+    /// so it can come back when the interruption ends. Any explicit pause
+    /// in the meantime clears that intent.
+    func pauseFromInterruption() {
+        let wasPlaying = wantsToPlay
+        pause()
+        resumeAfterInterruption = wasPlaying
+    }
+
+    /// Consumes the interruption-resume intent.
+    func takeInterruptionResumeWanted() -> Bool {
+        defer { resumeAfterInterruption = false }
+        return resumeAfterInterruption
+    }
+
+    /// Resumes the loaded item, rebuilding it when the last one failed or the
+    /// station only exists as restored cold-launch state.
     func resume() {
         guard station != nil else { return }
         error = nil
-        playsWhenReady = true
-        if player.currentItem?.status == .failed, let station, let url = URL(string: station.url) {
-            startStream(station: station, url: url)
-        } else {
+        wantsToPlay = true
+        if let current = player.currentItem, current.status != .failed {
             player.play()
             resumeMetadata()
+        } else if let station, let url = URL(string: station.url) {
+            configureSessionIfNeeded()
+            startStream(station: station, url: url)
         }
         system?.refresh()
     }
@@ -274,7 +354,8 @@ final class RadioPlayer {
             bufferingSinceMs = nil
         }
         if playing {
-            // A stream that actually delivers audio resets the ladder.
+            // A stream that actually delivers audio resets the ladder and
+            // disarms any retry that was still waiting.
             finishRecovery()
         }
         updateTicker()
@@ -297,7 +378,7 @@ final class RadioPlayer {
             try? await Task.sleep(for: .milliseconds(waitMs))
             guard !Task.isCancelled, let self else { return }
             self.retryTask = nil
-            guard self.playsWhenReady, let station = self.station,
+            guard self.wantsToPlay, let station = self.station,
                   let url = URL(string: station.url)
             else {
                 self.finishRecovery()
@@ -308,7 +389,9 @@ final class RadioPlayer {
     }
 
     /// The 20-second stall watchdog: a stream that stops delivering without
-    /// any error looks identical to a slow buffer until the timeout.
+    /// any error looks identical to a slow buffer until the timeout. A pending
+    /// retry is already handling it; a replacement stream gets its own
+    /// deadline from `startStream`.
     private func startWatchdog() {
         guard watchdog == nil else { return }
         let interval = Double(ReconnectPolicy.watchdogIntervalMs) / 1000
@@ -322,7 +405,7 @@ final class RadioPlayer {
     }
 
     private func checkStall() {
-        guard playsWhenReady, !reconnecting, error == nil else { return }
+        guard wantsToPlay, retryTask == nil, error == nil else { return }
         guard player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
               let since = bufferingSinceMs
         else { return }
@@ -345,7 +428,7 @@ final class RadioPlayer {
     }
 
     private func networkReturned() {
-        guard playsWhenReady, station != nil else { return }
+        guard wantsToPlay, station != nil else { return }
         let failed = player.currentItem?.status == .failed
         guard reconnecting || failed else { return }
         retryTask?.cancel()
@@ -366,6 +449,8 @@ final class RadioPlayer {
     }
 
     private func finishRecovery() {
+        retryTask?.cancel()
+        retryTask = nil
         policy.reset()
         reconnecting = false
         reconnectAttempt = 0

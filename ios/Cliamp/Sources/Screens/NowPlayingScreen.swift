@@ -187,9 +187,9 @@ struct NowPlayingScreen: View {
                     .frame(width: available / 3.7)
                     MechKey(filled: true, height: 64, action: { player.toggle() }) {
                         CliampIcon(
-                            player.playing ? CliampIcons.pause : CliampIcons.playTab,
-                            width: player.playing ? 20 : 22,
-                            height: player.playing ? 22 : 22,
+                            player.wantsToPlay ? CliampIcons.pause : CliampIcons.playTab,
+                            width: player.wantsToPlay ? 20 : 22,
+                            height: player.wantsToPlay ? 22 : 22,
                             tint: palette.onAccent
                         )
                     }

@@ -126,7 +126,7 @@ struct StationsScreen: View {
                     active: player.station?.url == station.url,
                     playing: player.playing,
                     favorite: app.isFavorite(station),
-                    action: { play(station) },
+                    action: { play(station, from: model.cliamp) },
                     onToggleFavorite: { app.toggleFavorite(station) }
                 )
             }
@@ -180,7 +180,7 @@ struct StationsScreen: View {
                     active: player.station?.url == station.url,
                     playing: player.playing,
                     favorite: app.isFavorite(station),
-                    action: { play(station) },
+                    action: { play(station, from: model.custom) },
                     onToggleFavorite: { app.toggleFavorite(station) },
                     onRemove: { model.removeCustom(station) }
                 )
@@ -212,7 +212,7 @@ struct StationsScreen: View {
                     active: player.station?.url == station.url,
                     playing: player.playing,
                     favorite: app.isFavorite(station),
-                    action: { play(station) },
+                    action: { play(station, from: model.directory) },
                     onToggleFavorite: { app.toggleFavorite(station) }
                 )
                 .onAppear { model.nextPageIfNeeded(current: station) }
@@ -282,7 +282,7 @@ struct StationsScreen: View {
                     playing: player.playing,
                     favorite: app.isFavorite(station),
                     subtitle: station.source == .custom ? "custom" : "cliamp",
-                    action: { play(station) },
+                    action: { play(station, from: stations) },
                     onToggleFavorite: { app.toggleFavorite(station) },
                     onRemove: removable ? { model.removeCustom(station) } : nil
                 )
@@ -295,9 +295,9 @@ struct StationsScreen: View {
         .padding(.vertical, 2)
     }
 
-    private func play(_ station: Station) {
+    private func play(_ station: Station, from list: [Station]) {
         model.reportPlay(station)
-        player.play(station)
+        player.play(station, from: list)
     }
 }
 

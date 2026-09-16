@@ -6,7 +6,7 @@ import SwiftUI
 struct RootView: View {
     @Environment(\.colorScheme) private var systemScheme
     @State private var app = AppState()
-    @State private var player = RadioPlayer()
+    @State private var player = RadioPlayer.shared
     @State private var tab: AppTab = .stations
     @State private var showSettings = false
     @State private var showPlayer = false

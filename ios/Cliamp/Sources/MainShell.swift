@@ -112,8 +112,8 @@ struct MiniPlayerBar: View {
                         player.toggle()
                     } label: {
                         CliampIcon(
-                            player.playing ? CliampIcons.pause : CliampIcons.playTab,
-                            size: player.playing ? 13 : 15,
+                            player.wantsToPlay ? CliampIcons.pause : CliampIcons.playTab,
+                            size: player.wantsToPlay ? 13 : 15,
                             tint: palette.dark ? palette.onAccent : palette.ground
                         )
                         .frame(width: 38, height: 38)

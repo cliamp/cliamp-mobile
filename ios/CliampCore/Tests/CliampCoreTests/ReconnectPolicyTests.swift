@@ -59,6 +59,14 @@ struct ReconnectPolicyTests {
         )
         #expect(!ReconnectPolicy.isRecoverable(wrappedMalformed))
 
+        // A fatal outer error is fatal even when it wraps a transient one.
+        let fatalOuter = NSError(
+            domain: AVFoundationErrorDomain,
+            code: AVError.fileFormatNotRecognized.rawValue,
+            userInfo: [NSUnderlyingErrorKey: network]
+        )
+        #expect(!ReconnectPolicy.isRecoverable(fatalOuter))
+
         let unsupportedCodec = NSError(
             domain: AVFoundationErrorDomain, code: AVError.decoderNotFound.rawValue
         )

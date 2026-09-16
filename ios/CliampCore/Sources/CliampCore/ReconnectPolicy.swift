@@ -38,18 +38,23 @@ public struct ReconnectPolicy: Sendable {
     /// worth another go. Retrying a stream the decoder cannot play would just
     /// spin; Android draws the same line in `Reconnector.recoverable`.
     public static func isRecoverable(_ error: NSError) -> Bool {
+        // A known fatal cause poisons the whole chain, wrappers included.
+        if isFatal(error) { return false }
         if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError {
-            // A wrapper error is only as recoverable as what it wraps.
             return isRecoverable(underlying)
         }
+        return true
+    }
+
+    private static func isFatal(_ error: NSError) -> Bool {
         switch (error.domain, error.code) {
         case (AVFoundationErrorDomain, AVError.fileFormatNotRecognized.rawValue),
              (AVFoundationErrorDomain, AVError.fileFailedToParse.rawValue),
              (AVFoundationErrorDomain, AVError.decoderNotFound.rawValue),
              (NSURLErrorDomain, NSURLErrorFileDoesNotExist):
-            return false
-        default:
             return true
+        default:
+            return false
         }
     }
 }
