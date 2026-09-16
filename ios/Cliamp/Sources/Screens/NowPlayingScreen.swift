@@ -2,8 +2,9 @@ import CliampCore
 import CliampDesign
 import SwiftUI
 
-/// The full player. Portrait stacks art, meta, transport; a wide frame keeps
-/// the same column centred at a readable width until the split layout lands.
+/// The full player. Portrait stacks art, meta and transport; a wide frame
+/// (landscape phone, tablet on its side) splits art on the left from the
+/// controls on the right, the same break Android uses.
 struct NowPlayingScreen: View {
     @Environment(\.cliampPalette) private var palette
     let player: RadioPlayer
@@ -19,24 +20,11 @@ struct NowPlayingScreen: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            topRow
-            GeometryReader { proxy in
-                let artSide = min(proxy.size.width - cliampGutter * 2, 340)
-                VStack(spacing: 0) {
-                    Spacer(minLength: 8)
-                    art(side: artSide)
-                    Spacer().frame(height: 18)
-                    statusStrip
-                    Spacer().frame(height: 7)
-                    meta
-                    Spacer(minLength: 14)
-                    transport
-                    Spacer(minLength: 12)
-                }
-                .frame(maxWidth: 460)
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, cliampGutter)
+        GeometryReader { proxy in
+            if proxy.size.width > proxy.size.height {
+                landscape(proxy: proxy)
+            } else {
+                portrait(proxy: proxy)
             }
         }
         .background(palette.ground)
@@ -50,28 +38,78 @@ struct NowPlayingScreen: View {
         }
     }
 
-    private var topRow: some View {
+    // MARK: portrait
+
+    private func portrait(proxy: GeometryProxy) -> some View {
+        let artSide = min(proxy.size.width - cliampGutter * 2, 340)
+        return VStack(spacing: 0) {
+            headerRow
+            VStack(spacing: 0) {
+                Spacer(minLength: 8)
+                art(side: artSide)
+                Spacer().frame(height: 18)
+                statusStrip
+                Spacer().frame(height: 7)
+                meta
+                Spacer(minLength: 14)
+                transport
+                Spacer(minLength: 12)
+            }
+            .frame(maxWidth: 460)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, cliampGutter)
+        }
+    }
+
+    // MARK: landscape
+
+    /// Art and status on the left, header, meta and transport on the right.
+    private func landscape(proxy: GeometryProxy) -> some View {
+        let side = min(proxy.size.height - 76, (proxy.size.width - cliampGutter * 2) * 0.44)
+        let artSide = min(max(side, 96), 340)
+        return HStack(alignment: .center, spacing: 14) {
+            VStack(spacing: 14) {
+                art(side: artSide)
+                statusStrip
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            VStack(alignment: .leading, spacing: 8) {
+                headerRow
+                meta
+                Spacer(minLength: 0)
+                transport
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, cliampGutter)
+        .padding(.vertical, 6)
+    }
+
+    private var headerRow: some View {
         HStack(spacing: 8) {
             BackChevron(action: onClose)
             Spacer()
-            HStack(spacing: 8) {
-                CliampIcon(CliampIcons.queueTabLines, size: 14, tint: palette.accent)
-                Text("UP NEXT")
-                    .cliampText(CliampType.chip)
-                    .foregroundStyle(palette.ink)
-                Text("0")
-                    .cliampText(CliampType.chip)
-                    .foregroundStyle(palette.inkFaint)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .overlay(
-                RoundedRectangle(cornerRadius: CliampShape.small)
-                    .stroke(palette.chipBorder, lineWidth: 1)
-            )
+            upNextChip
         }
-        .padding(.horizontal, cliampGutter)
         .frame(height: 48)
+    }
+
+    private var upNextChip: some View {
+        HStack(spacing: 8) {
+            CliampIcon(CliampIcons.queueTabLines, size: 14, tint: palette.accent)
+            Text("UP NEXT")
+                .cliampText(CliampType.chip)
+                .foregroundStyle(palette.ink)
+            Text("0")
+                .cliampText(CliampType.chip)
+                .foregroundStyle(palette.inkFaint)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .overlay(
+            RoundedRectangle(cornerRadius: CliampShape.small)
+                .stroke(palette.chipBorder, lineWidth: 1)
+        )
     }
 
     private func art(side: CGFloat) -> some View {
@@ -81,15 +119,11 @@ struct NowPlayingScreen: View {
 
     private var meta: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text(player.station?.name ?? "pick a station")
-                .cliampText(CliampType.trackTitle)
+            MarqueeText(player.station?.name ?? "pick a station", style: CliampType.trackTitle)
                 .foregroundStyle(palette.ink)
-                .lineLimit(1)
-            Text(metaSecondary)
-                .cliampText(CliampType.rowPrimary)
+            MarqueeText(metaSecondary, style: CliampType.rowPrimary)
                 .foregroundStyle(secondaryColor)
-                .lineLimit(1)
-            Text(player.station?.sourceLine ?? "cliamp radio")
+            Text(player.station?.playerSourceLine ?? "cliamp radio")
                 .cliampText(CliampType.body)
                 .foregroundStyle(palette.inkTertiary)
                 .lineLimit(1)

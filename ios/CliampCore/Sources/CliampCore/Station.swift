@@ -111,6 +111,30 @@ public struct Station: Identifiable, Hashable, Sendable, Codable {
         default: meta.isEmpty ? "live stream" : meta
         }
     }
+
+    /// The expanded player's source line: origin, then country and votes for
+    /// directory stations, matching Android's `sourceLine`.
+    public var playerSourceLine: String {
+        var parts = [sourceLabel]
+        if !country.isEmpty, source != .cliamp {
+            parts.append(country.lowercased())
+        }
+        if votes > 0 {
+            parts.append("\(TimeFormat.compact(votes)) votes")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var sourceLabel: String {
+        switch source {
+        case .cliamp: "cliamp radio"
+        case .directory: "directory"
+        case .local: "on device"
+        case .provider: "provider"
+        case .podcast: "podcast"
+        case .custom: "custom"
+        }
+    }
 }
 
 private extension Array where Element: Hashable {

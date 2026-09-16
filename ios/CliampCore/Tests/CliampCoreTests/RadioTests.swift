@@ -74,6 +74,18 @@ struct StationTests {
         #expect(stream.sourceLine == "mp3 · 128k · germany")
         #expect(CliampRadio.builtin[0].sourceLine == "cliamp radio")
     }
+
+    @Test("the player source line names origin, country and votes")
+    func playerSourceLine() {
+        #expect(stream.playerSourceLine == "directory · germany")
+        let voted = Station(
+            id: "dir:2", name: "Radio", url: "https://example.com/s",
+            source: .directory, country: "France", votes: 12_345
+        )
+        #expect(voted.playerSourceLine == "directory · france · 12.3k votes")
+        // A cliamp channel has no country or votes to show.
+        #expect(CliampRadio.builtin[0].playerSourceLine == "cliamp radio")
+    }
 }
 
 @Suite("time formatting")
