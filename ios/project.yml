@@ -47,6 +47,10 @@ targets:
           - jetbrains_mono_bold.ttf
         UIBackgroundModes:
           - audio
+        # DEC-02: the managed music folder is the user's own copy space, so
+        # Files and Finder show it and files can be dropped straight in.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
         # DEC-07: the directory lists many stations that still stream over
         # plain HTTP, and the media-only exception is not honoured for
         # AVPlayerItem loads on iOS 26 (verified -1022 with

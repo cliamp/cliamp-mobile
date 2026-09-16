@@ -15,6 +15,8 @@ struct MainShell: View {
     @Binding var podcastPath: [PodcastShow]
     @Binding var showSearch: Bool
     @Binding var showSettings: Bool
+    @State private var library = LibraryModel()
+    @State private var libraryPath: [LibraryDestination] = []
 
     var body: some View {
         GeometryReader { proxy in
@@ -36,6 +38,22 @@ struct MainShell: View {
                 }
             }
         }
+        #if DEBUG
+        .onAppear {
+            // Screenshot hooks; never compiled into release builds.
+            let arguments = ProcessInfo.processInfo.arguments
+            if arguments.contains("-cliamp-preview-library") {
+                tab = .library
+            }
+            if arguments.contains("-cliamp-preview-library-local") {
+                tab = .library
+                libraryPath = [.smart(.localSongs)]
+            }
+            if arguments.contains("-cliamp-preview-library-playlists") {
+                tab = .library
+            }
+        }
+        #endif
     }
 
     @ViewBuilder
@@ -46,7 +64,7 @@ struct MainShell: View {
             TabView(selection: $tab) {
                 stationsPage.tag(AppTab.stations)
                 podcastsPage.tag(AppTab.pods)
-                PlaceholderTab(title: "Library").tag(AppTab.library)
+                libraryPage.tag(AppTab.library)
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
 
@@ -66,6 +84,19 @@ struct MainShell: View {
                                 onOpenSettings: onOpenSettings
                             )
                             .toolbar(.hidden, for: .navigationBar)
+                        }
+                }
+                .toolbar(.hidden, for: .navigationBar)
+            }
+
+            if !libraryPath.isEmpty {
+                // Library panes ride above the pager with the chrome visible,
+                // the same way Android pushes them over Home.
+                NavigationStack(path: $libraryPath) {
+                    Color.clear
+                        .navigationDestination(for: LibraryDestination.self) { destination in
+                            libraryDestination(destination)
+                                .toolbar(.hidden, for: .navigationBar)
                         }
                 }
                 .toolbar(.hidden, for: .navigationBar)
@@ -117,6 +148,73 @@ struct MainShell: View {
         )
     }
 
+    @ViewBuilder
+    private var libraryPage: some View {
+        LibraryScreen(
+            model: library,
+            app: app,
+            downloads: PodcastServices.shared.downloads,
+            onOpenSmart: { libraryPath = [.smart($0)] },
+            onOpenPlaylist: { libraryPath = [.playlist($0)] },
+            onAddSongs: { libraryPath = [.playlistAdding($0)] },
+            onOpenProviders: { libraryPath = [.providers] },
+            onOpenSearch: { showSearch = true },
+            onOpenSettings: onOpenSettings
+        )
+    }
+
+    @ViewBuilder
+    private func libraryDestination(_ destination: LibraryDestination) -> some View {
+        switch destination {
+        case .smart(let kind):
+            SmartDetailScreen(
+                model: library,
+                kind: kind,
+                player: player,
+                app: app,
+                downloads: PodcastServices.shared.downloads,
+                podcasts: PodcastServices.shared.podcasts,
+                onBack: { libraryPath = [] },
+                onOpenSearch: { showSearch = true },
+                onOpenSettings: onOpenSettings
+            )
+        case .playlist(let slug):
+            PlaylistDetailScreen(
+                model: library,
+                slug: slug,
+                player: player,
+                app: app,
+                downloads: PodcastServices.shared.downloads,
+                podcasts: PodcastServices.shared.podcasts,
+                adding: false,
+                onBack: { libraryPath = [] },
+                onAdded: { libraryPath = [.playlist(slug)] },
+                onOpenSearch: { showSearch = true },
+                onOpenSettings: onOpenSettings
+            )
+        case .playlistAdding(let slug):
+            PlaylistDetailScreen(
+                model: library,
+                slug: slug,
+                player: player,
+                app: app,
+                downloads: PodcastServices.shared.downloads,
+                podcasts: PodcastServices.shared.podcasts,
+                adding: true,
+                onBack: { libraryPath = [] },
+                onAdded: { libraryPath = [.playlist(slug)] },
+                onOpenSearch: { showSearch = true },
+                onOpenSettings: onOpenSettings
+            )
+        case .providers:
+            ProvidersPane(
+                onBack: { libraryPath = [] },
+                onOpenSearch: { showSearch = true },
+                onOpenSettings: onOpenSettings
+            )
+        }
+    }
+
     private func select(_ tab: AppTab) {
         withAnimation(.easeOut(duration: 0.18)) {
             // A tab tap returns to that tab's root, like Android popping to
@@ -124,26 +222,9 @@ struct MainShell: View {
             showSearch = false
             showSettings = false
             podcastPath = []
+            libraryPath = []
             self.tab = tab
         }
-    }
-}
-
-/// Fills the gap for the two tabs that arrive in phases 3 and 4.
-private struct PlaceholderTab: View {
-    @Environment(\.cliampPalette) private var palette
-    let title: String
-
-    var body: some View {
-        VStack(spacing: 0) {
-            CliampHeader(title, onSettings: {})
-            Spacer()
-            Text("this tab lands in a later phase")
-                .cliampText(CliampType.rowSecondary)
-                .foregroundStyle(palette.inkFaint)
-            Spacer()
-        }
-        .background(palette.ground)
     }
 }
 

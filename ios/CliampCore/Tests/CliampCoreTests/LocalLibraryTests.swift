@@ -137,22 +137,6 @@ struct LocalLibraryTests {
         #expect(folders[1].songs.map(\.title) == ["loose"])
     }
 
-    @Test("all four sort orders are stable and case-insensitive")
-    func sorting() {
-        let songs = [
-            LocalSong(relativePath: "b.wav", title: "Beta", artist: "Zed", album: "Same",
-                      durationMs: 0, dateAdded: 20, cover: ""),
-            LocalSong(relativePath: "a.wav", title: "alpha", artist: "amy", album: "Same",
-                      durationMs: 0, dateAdded: 30, cover: ""),
-            LocalSong(relativePath: "c.wav", title: "Gamma", artist: "Amy", album: "First",
-                      durationMs: 0, dateAdded: 10, cover: ""),
-        ]
-        #expect(LocalLibrary.sorted(songs, by: .title).map(\.title) == ["alpha", "Beta", "Gamma"])
-        #expect(LocalLibrary.sorted(songs, by: .artist).map(\.title) == ["alpha", "Gamma", "Beta"])
-        #expect(LocalLibrary.sorted(songs, by: .album).map(\.title) == ["Gamma", "alpha", "Beta"])
-        #expect(LocalLibrary.sorted(songs, by: .recentlyAdded).map(\.title) == ["alpha", "Beta", "Gamma"])
-    }
-
     @Test("a station carries the absolute file URL, tags and duration")
     func stationMapping() throws {
         let root = temporaryRoot()

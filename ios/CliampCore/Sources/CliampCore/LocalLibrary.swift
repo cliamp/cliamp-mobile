@@ -281,50 +281,6 @@ public final class LocalLibrary: Sendable {
             }
             .sorted { $0.name.lowercased() < $1.name.lowercased() }
     }
-
-    // MARK: sorting
-
-    /// The four orders the library exposes, matching Android's `PlaylistSort`.
-    public enum Sort: String, Sendable, CaseIterable {
-        case title
-        case artist
-        case album
-        case recentlyAdded
-
-        public var label: String {
-            switch self {
-            case .title: "TITLE"
-            case .artist: "ARTIST"
-            case .album: "ALBUM"
-            case .recentlyAdded: "RECENT"
-            }
-        }
-    }
-
-    public static func sorted(_ songs: [LocalSong], by sort: Sort) -> [LocalSong] {
-        switch sort {
-        case .title:
-            songs.sorted { $0.title.lowercased() < $1.title.lowercased() }
-        case .artist:
-            songs.sorted {
-                let left = ($0.artist.lowercased(), $0.title.lowercased())
-                let right = ($1.artist.lowercased(), $1.title.lowercased())
-                return left < right
-            }
-        case .album:
-            songs.sorted {
-                let left = ($0.album.lowercased(), $0.title.lowercased())
-                let right = ($1.album.lowercased(), $1.title.lowercased())
-                return left < right
-            }
-        case .recentlyAdded:
-            songs.sorted {
-                $0.dateAdded == $1.dateAdded
-                    ? $0.title.lowercased() < $1.title.lowercased()
-                    : $0.dateAdded > $1.dateAdded
-            }
-        }
-    }
 }
 
 private extension Array where Element == AVMetadataItem {
