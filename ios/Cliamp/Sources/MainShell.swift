@@ -14,6 +14,7 @@ struct MainShell: View {
     let onOpenPlayer: () -> Void
     @Binding var podcastPath: [PodcastShow]
     @Binding var showSearch: Bool
+    @Binding var showSettings: Bool
 
     var body: some View {
         GeometryReader { proxy in
@@ -39,61 +40,85 @@ struct MainShell: View {
 
     @ViewBuilder
     private var content: some View {
-        if showSearch {
-            // The finder is a page over the permanent chrome, like Android's
-            // Search destination: mini player and tab bar stay visible.
-            SearchScreen(
-                model: PodcastServices.shared.search,
-                player: player,
-                onBack: { showSearch = false },
-                onOpenShow: { show in
-                    showSearch = false
-                    tab = .pods
-                    podcastPath.append(show)
-                }
-            )
-        } else {
-            switch tab {
-            case .stations:
-                StationsScreen(
-                    player: player, app: app,
-                    onOpenSettings: onOpenSettings,
-                    onOpenSearch: { showSearch = true }
-                )
-            case .pods:
-                // A detail screen stays inside the shell, the way Android keeps
-                // the mini player and tab bar under every pushed route.
-                NavigationStack(path: $podcastPath) {
-                    PodcastsScreen(
-                        player: player,
-                        app: app,
-                        podcasts: PodcastServices.shared.podcasts,
-                        downloads: PodcastServices.shared.downloads,
-                        onOpenSettings: onOpenSettings,
-                        onOpenSearch: { showSearch = true },
-                        onOpenShow: { podcastPath.append($0) }
-                    )
-                    .toolbar(.hidden, for: .navigationBar)
-                    .navigationDestination(for: PodcastShow.self) { show in
-                        PodcastShowScreen(
-                            player: player,
-                            podcasts: PodcastServices.shared.podcasts,
-                            downloads: PodcastServices.shared.downloads,
-                            show: show,
-                            onOpenSearch: { showSearch = true },
-                            onOpenSettings: onOpenSettings
-                        )
-                        .toolbar(.hidden, for: .navigationBar)
+        ZStack {
+            // Swiping between the three tab pages, keeping each page's state,
+            // the way Android's pager behaves.
+            TabView(selection: $tab) {
+                stationsPage.tag(AppTab.stations)
+                podcastsPage.tag(AppTab.pods)
+                PlaceholderTab(title: "Library").tag(AppTab.library)
+            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+
+            if showSearch {
+                // The finder is a page over the permanent chrome, like
+                // Android's Search destination: mini player and tab stay.
+                SearchScreen(
+                    model: PodcastServices.shared.search,
+                    player: player,
+                    onBack: { showSearch = false },
+                    onOpenShow: { show in
+                        showSearch = false
+                        tab = .pods
+                        // Android returns to the Podcasts root, not the
+                        // previous show.
+                        podcastPath = [show]
                     }
-                }
-            case .library:
-                PlaceholderTab(title: "Library")
-                }
+                )
+            }
+
+            if showSettings {
+                // Settings is a page over the chrome too, like Android.
+                SettingsScreen(app: app, onBack: { showSettings = false })
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var stationsPage: some View {
+        StationsScreen(
+            player: player, app: app,
+            onOpenSettings: onOpenSettings,
+            onOpenSearch: { showSearch = true }
+        )
+    }
+
+    @ViewBuilder
+    private var podcastsPage: some View {
+        // A detail screen stays inside the shell, the way Android keeps the
+        // mini player and tab bar under every pushed route.
+        NavigationStack(path: $podcastPath) {
+            PodcastsScreen(
+                player: player,
+                app: app,
+                podcasts: PodcastServices.shared.podcasts,
+                downloads: PodcastServices.shared.downloads,
+                onOpenSettings: onOpenSettings,
+                onOpenSearch: { showSearch = true },
+                onOpenShow: { podcastPath.append($0) }
+            )
+            .toolbar(.hidden, for: .navigationBar)
+            .navigationDestination(for: PodcastShow.self) { show in
+                PodcastShowScreen(
+                    player: player,
+                    podcasts: PodcastServices.shared.podcasts,
+                    downloads: PodcastServices.shared.downloads,
+                    show: show,
+                    onOpenSearch: { showSearch = true },
+                    onOpenSettings: onOpenSettings
+                )
+                .toolbar(.hidden, for: .navigationBar)
+            }
         }
     }
 
     private func select(_ tab: AppTab) {
         withAnimation(.easeOut(duration: 0.18)) {
+            // A tab tap returns to that tab's root, like Android popping to
+            // Home before selecting.
+            showSearch = false
+            showSettings = false
+            podcastPath = []
             self.tab = tab
         }
     }

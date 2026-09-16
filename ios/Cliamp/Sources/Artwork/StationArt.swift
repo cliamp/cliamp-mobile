@@ -4,6 +4,7 @@ import SwiftUI
 
 enum StationArtFallback {
     case glyph
+    case podcast
     case plate
 }
 
@@ -33,6 +34,8 @@ struct StationArtView: View {
                 switch fallback {
                 case .glyph:
                     GlyphPlate(CliampIcons.stationsTab, size: size)
+                case .podcast:
+                    GlyphPlate(CliampIcons.podRow, size: size)
                 case .plate:
                     ArtPlate(radius: corner)
                         .overlay(
@@ -66,6 +69,7 @@ struct StationArtView: View {
 struct StationArtSquare: View {
     let station: Station
     var corner: CGFloat = CliampShape.medium
+    var fallback: StationArtFallback = .plate
 
     var body: some View {
         GeometryReader { proxy in
@@ -73,7 +77,7 @@ struct StationArtSquare: View {
                 station: station,
                 size: proxy.size.width,
                 corner: corner,
-                fallback: .plate,
+                fallback: fallback,
                 target: .full
             )
         }

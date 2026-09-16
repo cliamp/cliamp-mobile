@@ -22,17 +22,13 @@ struct RootView: View {
             onOpenSettings: { showSettings = true },
             onOpenPlayer: { showPlayer = true },
             podcastPath: $podcastPath,
-            showSearch: $showSearch
+            showSearch: $showSearch,
+            showSettings: $showSettings
         )
         .cliampTheme(palette)
         .environment(\.cliampHapticsEnabled, app.haptics)
         .onChange(of: app.fallbackStations) { _, _ in
             player.refreshNavigation()
-        }
-        .fullScreenCover(isPresented: $showSettings) {
-            SettingsScreen(app: app, onBack: { showSettings = false })
-                .cliampTheme(palette)
-                .environment(\.cliampHapticsEnabled, app.haptics)
         }
         .fullScreenCover(isPresented: $showPlayer) {
             NowPlayingScreen(player: player, app: app, onClose: { showPlayer = false })
@@ -58,6 +54,7 @@ struct RootView: View {
                 downloads.localPath(url: url)
             }
             services.search.favoritesProvider = { [app] in app.favorites }
+            services.search.historyProvider = { [app] in app.history }
             // Android restores the last station to the bus but never plays it
             // unless auto-resume is on: a radio app that starts making noise
             // on launch is a bad neighbour (RAD-12).
@@ -93,6 +90,12 @@ struct RootView: View {
             }
             if arguments.contains("-cliamp-preview-search") {
                 showSearch = true
+            }
+            if let index = arguments.firstIndex(of: "-cliamp-preview-search-query"),
+               index + 1 < arguments.count
+            {
+                showSearch = true
+                PodcastServices.shared.search.query = arguments[index + 1]
             }
             if let index = arguments.firstIndex(of: "-cliamp-preview-podcast"),
                index + 1 < arguments.count

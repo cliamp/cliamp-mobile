@@ -13,6 +13,7 @@ struct PodcastShowScreen: View {
     let onOpenSearch: () -> Void
     let onOpenSettings: () -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var topTrigger = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -20,21 +21,29 @@ struct PodcastShowScreen: View {
                 "Podcast",
                 onBack: { dismiss() },
                 onSearch: onOpenSearch,
-                onSettings: onOpenSettings
-            ) {
-                EmptyView()
-            }
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    header
-                    SectionLabel("episodes — \(podcasts.episodes.count)") {
-                        Text("refresh")
-                            .cliampText(CliampType.meta)
-                            .foregroundStyle(palette.inkTertiary)
-                            .microPress { podcasts.refreshShow() }
+                onSettings: onOpenSettings,
+                onTitleTap: { topTrigger += 1 }
+            )
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        header.id("top")
+                        if !podcasts.episodes.isEmpty {
+                            SectionLabel("episodes — \(podcasts.episodes.count)") {
+                                Text("refresh")
+                                    .cliampText(CliampType.meta)
+                                    .foregroundStyle(palette.inkTertiary)
+                                    .microPress { podcasts.refreshShow() }
+                            }
+                        }
+                        episodesSection
+                        Spacer().frame(height: 20)
                     }
-                    episodesSection
-                    Spacer().frame(height: 20)
+                }
+                .onChange(of: topTrigger) { _, _ in
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo("top", anchor: .top)
+                    }
                 }
             }
         }
@@ -113,19 +122,23 @@ struct PodcastShowScreen: View {
             EmptyNote("no episodes in this feed")
         } else {
             ForEach(podcasts.episodes, id: \.guid) { episode in
+                let station = episode.station(show: currentShow)
                 EpisodeRow(
                     episode: episode,
-                    show: currentShow,
-                    active: player.station?.url == episode.audioUrl,
+                    station: station,
+                    active: player.station?.url == station.url,
                     playing: player.playing,
-                    progress: podcasts.progressEntry(for: episode.audioUrl),
-                    downloadState: downloads.state(for: episode.audioUrl),
-                    downloaded: downloads.isDownloaded(url: episode.audioUrl),
+                    progress: podcasts.progressEntry(for: station.url),
+                    downloadState: downloads.state(for: station.url),
+                    downloadedBytes: downloads.entry(for: station.url)?.bytes ?? 0,
                     onPlay: { play(episode) },
-                    onToggleDownload: { toggleDownload(episode) },
-                    onRemoveDownload: { downloads.remove(url: episode.audioUrl) },
-                    onMarkPlayed: { podcasts.markCompleted(episode.station(show: currentShow)) },
-                    onClearProgress: { podcasts.clearProgress(episode.station(show: currentShow)) }
+                    onPlayNext: { player.playNext(station) },
+                    onAddToQueue: { player.addToQueue(station) },
+                    onMarkPlayed: { podcasts.markCompleted(station) },
+                    onForget: { podcasts.clearProgress(station) },
+                    onDownload: { downloads.download(station) },
+                    onCancelDownload: { downloads.cancel(url: station.url) },
+                    onRemoveDownload: { downloads.remove(url: station.url) }
                 )
             }
         }
@@ -153,126 +166,161 @@ struct PodcastShowScreen: View {
     }
 }
 
-/// One episode row: title, date/duration, progress, and the fetch control.
+/// One episode row, ported from Android's `EpisodeRow`: a podRow artwork
+/// thumb with the play/pause/check badge bottom-right, the download control
+/// left of the overflow, and the metadata line that carries offline size,
+/// fetching state and "played".
 private struct EpisodeRow: View {
     @Environment(\.cliampPalette) private var palette
     let episode: PodcastEpisode
-    let show: PodcastShow
+    let station: Station
     let active: Bool
     let playing: Bool
     let progress: EpisodeProgress?
     let downloadState: DownloadState?
-    let downloaded: Bool
+    let downloadedBytes: Int64
     let onPlay: () -> Void
-    let onToggleDownload: () -> Void
-    let onRemoveDownload: () -> Void
+    let onPlayNext: () -> Void
+    let onAddToQueue: () -> Void
     let onMarkPlayed: () -> Void
-    let onClearProgress: () -> Void
+    let onForget: () -> Void
+    let onDownload: () -> Void
+    let onCancelDownload: () -> Void
+    let onRemoveDownload: () -> Void
+
+    private var done: Bool { progress?.completed == true }
+    private var fetched: Bool { downloadedBytes > 0 }
 
     var body: some View {
         ListRow(
             onClick: onPlay,
-            leading: {
-                StationArtView(station: episode.station(show: show), size: 40, fallback: .glyph)
-                    .overlay {
-                        if active {
-                            RoundedRectangle(cornerRadius: CliampShape.tiny)
-                                .fill(palette.accent.opacity(0.92))
-                                .overlay(
-                                    CliampIcon(
-                                        playing ? CliampIcons.pause : CliampIcons.playRow,
-                                        size: 9,
-                                        tint: palette.onAccent
-                                    )
-                                )
-                                .frame(width: 18, height: 18)
-                        }
-                    }
-            },
+            leading: { artwork },
             trailing: {
-                HStack(spacing: 10) {
-                    if let progress, progress.completed {
-                        Text("done")
-                            .cliampText(CliampType.meta)
-                            .foregroundStyle(palette.accent)
-                    }
+                HStack(spacing: 12) {
                     downloadControl
-                    Menu {
-                        Button("play", action: onPlay)
-                        Button("mark played", action: onMarkPlayed)
-                        if progress != nil {
-                            Button("clear progress", action: onClearProgress)
-                        }
-                        if downloaded {
-                            Button("remove download", role: .destructive, action: onRemoveDownload)
-                        }
-                    } label: {
-                        CliampIcon(CliampIcons.more, size: 16, tint: palette.ink)
-                            .frame(width: 30, height: 30)
-                            .contentShape(Rectangle())
-                    }
+                    menu
                 }
             },
-            verticalPadding: 9,
+            verticalPadding: 11,
             rail: active,
             railOffset: cliampGutter
         ) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(episode.title)
-                    .cliampText(CliampType.rowPrimary)
-                    .foregroundStyle(active ? palette.accent : palette.ink)
-                    .lineLimit(2)
-                HStack(spacing: 6) {
-                    Text(episode.listMeta)
-                        .cliampText(CliampType.rowSecondary)
-                        .foregroundStyle(palette.inkTertiary)
-                        .lineLimit(1)
-                    if let progress, !progress.completed, progress.fraction > 0 {
-                        Text("· \(Int(progress.fraction * 100))%")
-                            .cliampText(CliampType.rowSecondary)
-                            .foregroundStyle(palette.accent)
-                    }
+            Text(station.name)
+                .cliampText(CliampType.rowPrimary)
+                .foregroundStyle(active ? palette.accent : (done ? palette.inkTertiary : palette.ink))
+                .lineLimit(2)
+            Text(metaLine)
+                .cliampText(CliampType.rowSecondary)
+                .foregroundStyle(progress != nil && !done ? palette.amber : palette.inkTertiary)
+                .lineLimit(1)
+        }
+    }
+
+    private var artwork: some View {
+        StationArtView(station: station, size: 40, fallback: .podcast)
+            .overlay(
+                RoundedRectangle(cornerRadius: CliampShape.small)
+                    .stroke(active ? palette.accent : palette.frameBorder, lineWidth: 1)
+            )
+            .overlay(alignment: .bottomTrailing) {
+                if active || done {
+                    Circle()
+                        .fill(active ? palette.accent : palette.chipBorder)
+                        .frame(width: 17, height: 17)
+                        .overlay(
+                            CliampIcon(
+                                playing ? CliampIcons.pause : (done ? CliampIcons.check : CliampIcons.playRow),
+                                size: 9,
+                                tint: active ? palette.onAccent : palette.inkFaint
+                            )
+                        )
                 }
             }
-        }
     }
 
     @ViewBuilder
     private var downloadControl: some View {
         switch downloadState {
-        case .active(let fraction, let read, let total):
-            Button(action: onToggleDownload) {
-                Text(progressLabel(fraction: fraction, read: read, total: total))
-                    .cliampText(CliampType.meta)
-                    .foregroundStyle(palette.accent)
-                    .frame(width: 44, height: 30)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("cancel download")
-        case .failed:
-            CliampIcon(CliampIcons.download, size: 16, tint: palette.destructiveInk)
-                .frame(width: 30, height: 30)
+        case .active(let fraction, let read, _):
+            Text(indeterminate(fraction) ? downloadSizeLabel(read) : "\(Int(fraction * 100))%")
+                .cliampText(CliampType.meta)
+                .foregroundStyle(palette.amber)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
                 .contentShape(Rectangle())
-                .onTapGesture(perform: onToggleDownload)
-                .accessibilityLabel("retry download")
+                .onTapGesture(perform: onCancelDownload)
+        case .failed:
+            Text("retry")
+                .cliampText(CliampType.meta)
+                .foregroundStyle(palette.destructiveInk)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
+                .onTapGesture(perform: onDownload)
         case nil:
             CliampIcon(
-                downloaded ? CliampIcons.check : CliampIcons.download,
-                size: 16,
-                tint: downloaded ? palette.accent : palette.inkSecondary
+                CliampIcons.download,
+                size: 15,
+                tint: fetched ? palette.accent : palette.inkTertiary
             )
             .frame(width: 30, height: 30)
             .contentShape(Rectangle())
-            .onTapGesture(perform: onToggleDownload)
-            .accessibilityLabel(downloaded ? "remove download" : "download")
+            .onTapGesture {
+                // A completed download is passive; removal is the menu's job.
+                if !fetched { onDownload() }
+            }
+            .accessibilityLabel(fetched ? "downloaded" : "download")
         }
     }
 
-    private func progressLabel(fraction: Double, read: Int64, total: Int64) -> String {
-        if fraction < 0 {
-            return downloadSizeLabel(read)
+    private var menu: some View {
+        Menu {
+            Button("play next", action: onPlayNext)
+            Button("add to queue", action: onAddToQueue)
+            if fetched {
+                Button("remove download", role: .destructive, action: onRemoveDownload)
+            } else if case .active = downloadState {
+                Button("cancel download", role: .destructive, action: onCancelDownload)
+            } else {
+                Button("download", action: onDownload)
+            }
+            Button(done ? "mark unplayed" : "mark played") {
+                if done { onForget() } else { onMarkPlayed() }
+            }
+        } label: {
+            CliampIcon(CliampIcons.more, size: 16, tint: palette.ink)
+                .frame(width: 30, height: 30)
+                .contentShape(Rectangle())
         }
-        return "\(Int(fraction * 100))%"
+    }
+
+    private func indeterminate(_ fraction: Double) -> Bool { fraction < 0 }
+
+    private var metaLine: String {
+        var parts: [String] = []
+        if !episode.isFull { parts.append(episode.type.lowercased()) }
+        if episode.publishedAt > 0 { parts.append(PodcastEpisode.dateLabel(episode.publishedAt)) }
+        if episode.durationMs > 0 { parts.append(TimeFormat.clock(episode.durationMs)) }
+        if fetched {
+            parts.append("offline · \(downloadSizeLabel(downloadedBytes))")
+        } else {
+            switch downloadState {
+            case .active(let fraction, let read, _):
+                parts.append(
+                    indeterminate(fraction)
+                        ? "fetching \(downloadSizeLabel(read))"
+                        : "fetching \(Int(fraction * 100))%"
+                )
+            case .failed(let reason):
+                parts.append(reason)
+            case nil:
+                break
+            }
+        }
+        if let progress, !progress.completed, progress.positionMs > 0 {
+            parts.append("\(Int(progress.fraction * 100))% in")
+        }
+        if done { parts.append("played") }
+        return parts.joined(separator: " · ")
     }
 }

@@ -317,6 +317,25 @@ final class RadioPlayer {
         updateNavigationAvailability()
     }
 
+    /// Insert a station right after the current occurrence, the queue's
+    /// "play next". The active list keeps its order; the playback position is
+    /// untouched.
+    func playNext(_ station: Station) {
+        if let current = self.station,
+           let index = source.firstIndex(where: { $0.url == current.url }) {
+            source.insert(station, at: index + 1)
+        } else {
+            source.append(station)
+        }
+        updateNavigationAvailability()
+    }
+
+    /// Append a station to the active list's end, the queue's "add to queue".
+    func addToQueue(_ station: Station) {
+        source.append(station)
+        updateNavigationAvailability()
+    }
+
     /// Steps forward: the redo tail first when walking the fallback, then the
     /// walked list. An isolated tap lands immediately; a burst settles on the
     /// final target.

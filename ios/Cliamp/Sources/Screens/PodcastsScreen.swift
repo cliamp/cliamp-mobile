@@ -90,9 +90,10 @@ struct PodcastsScreen: View {
         }
     }
 
+    /// Only a Top query with a country selected shows a selected chip; a
+    /// category or search pane reads "all countries", like Android.
     private var currentCountryName: String? {
-        let code = podcasts.country
-        guard !code.isEmpty else { return nil }
+        guard case .top(let code) = podcasts.query, !code.isEmpty else { return nil }
         return podcasts.countries.first { $0.iso3166.caseInsensitiveCompare(code) == .orderedSame }?.name
             ?? code.uppercased()
     }
@@ -146,11 +147,7 @@ struct PodcastsScreen: View {
             }
         }
         directoryFilters
-        if podcasts.shows.isEmpty, podcasts.loading {
-            EmptyNote("loading…")
-        } else {
-            directoryGridOrRows
-        }
+        directoryGridOrRows
         directoryFooter
     }
 
@@ -158,7 +155,7 @@ struct PodcastsScreen: View {
         ScrollView(.horizontal) {
             HStack(spacing: 7) {
                 Chip("top", selected: isTopQuery) {
-                    podcasts.load(.top(country: podcasts.country), reset: true)
+                    podcasts.load(.top(country: ""), reset: true)
                 }
                 ForEach(PodcastDirectory.genres) { genre in
                     Chip(genre.name.lowercased(), selected: podcasts.query == .category(genre)) {
@@ -223,9 +220,9 @@ struct PodcastsScreen: View {
                 _ = error
                 podcasts.load(podcasts.query, reset: true)
             }
-        } else if podcasts.loading, !podcasts.shows.isEmpty {
+        } else if podcasts.loading {
             EmptyNote("loading more…")
-        } else if podcasts.exhausted, !podcasts.shows.isEmpty {
+        } else if podcasts.exhausted {
             EmptyNote("end of \(podcasts.query.label)")
         }
     }

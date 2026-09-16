@@ -106,6 +106,7 @@ public struct CliampHeader<Chips: View>: View {
     private let onSearch: (() -> Void)?
     private let onSettings: (() -> Void)?
     private let onTitleTap: (() -> Void)?
+    private let showsChips: Bool
     private let chips: () -> Chips
 
     public init(
@@ -114,6 +115,7 @@ public struct CliampHeader<Chips: View>: View {
         onSearch: (() -> Void)? = nil,
         onSettings: (() -> Void)? = nil,
         onTitleTap: (() -> Void)? = nil,
+        showsChips: Bool = true,
         @ViewBuilder chips: @escaping () -> Chips
     ) {
         self.title = title
@@ -121,6 +123,7 @@ public struct CliampHeader<Chips: View>: View {
         self.onSearch = onSearch
         self.onSettings = onSettings
         self.onTitleTap = onTitleTap
+        self.showsChips = showsChips
         self.chips = chips
     }
 
@@ -152,7 +155,9 @@ public struct CliampHeader<Chips: View>: View {
             .padding(.top, 8)
             .padding(.bottom, 6)
 
-            ChipsRow(content: chips)
+            if showsChips {
+                ChipsRow(content: chips)
+            }
 
             HairlineDivider(region: true)
         }
@@ -170,7 +175,8 @@ public extension CliampHeader where Chips == EmptyView {
     ) {
         self.init(
             title, onBack: onBack, onSearch: onSearch,
-            onSettings: onSettings, onTitleTap: onTitleTap
+            onSettings: onSettings, onTitleTap: onTitleTap,
+            showsChips: false
         ) { EmptyView() }
     }
 }

@@ -70,24 +70,18 @@ struct ShowTile: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            StationArtSquare(station: show.artStation)
+            StationArtSquare(station: show.artStation, fallback: .podcast)
                 .overlay(alignment: .topTrailing) {
                     if let onToggleSubscribe {
                         SubscribeStar(subscribed: subscribed, action: onToggleSubscribe)
                             .padding(10)
                     }
                 }
-                .overlay {
-                    if subscribed {
-                        RoundedRectangle(cornerRadius: CliampShape.medium)
-                            .stroke(palette.accent, lineWidth: 1)
-                    }
-                }
             Text(show.title)
                 .cliampText(CliampType.rowPrimaryMedium)
                 .foregroundStyle(palette.ink)
                 .lineLimit(2)
-            Text(show.meta.isEmpty ? "podcast" : show.meta)
+            Text(show.meta)
                 .cliampText(CliampType.rowSecondary)
                 .foregroundStyle(palette.inkTertiary)
                 .lineLimit(1)
@@ -110,7 +104,7 @@ struct ShowRow: View {
         ListRow(
             onClick: onOpen,
             leading: {
-                StationArtView(station: show.artStation, size: 40, fallback: .glyph)
+                StationArtView(station: show.artStation, size: 40, fallback: .podcast)
             },
             trailing: {
                 HStack(spacing: 12) {
@@ -121,14 +115,13 @@ struct ShowRow: View {
                 }
             },
             verticalPadding: 9,
-            rail: subscribed,
             railOffset: cliampGutter
         ) {
             Text(show.title)
                 .cliampText(CliampType.rowPrimary)
                 .foregroundStyle(palette.ink)
                 .lineLimit(1)
-            Text(show.meta.isEmpty ? "podcast" : show.meta)
+            Text(show.meta)
                 .cliampText(CliampType.rowSecondary)
                 .foregroundStyle(palette.inkTertiary)
                 .lineLimit(1)
