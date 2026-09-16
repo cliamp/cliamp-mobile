@@ -12,7 +12,14 @@ let package = Package(
         .library(name: "CliampCore", targets: ["CliampCore"])
     ],
     targets: [
-        .target(name: "CliampCore"),
-        .testTarget(name: "CliampCoreTests", dependencies: ["CliampCore"]),
+        .target(
+            name: "CliampCore",
+            swiftSettings: [.unsafeFlags(["-warnings-as-errors"])]
+        ),
+        .testTarget(
+            name: "CliampCoreTests",
+            dependencies: ["CliampCore"],
+            swiftSettings: [.unsafeFlags(["-warnings-as-errors"])]
+        ),
     ]
 )

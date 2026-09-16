@@ -25,9 +25,20 @@ play time rather than storing them, and keeping credentials out of plain files.
 
 The OS floor is set by `DEC-03`'s system surfaces: interactive widgets need iOS
 17 and Control Center controls need iOS 18, so an iOS 18 floor avoids fallback
-branches for the whole port. The device matrix and review scope live in the
-parity tracker (`FND-02`, `QA-02`). A physical iPhone is required from phase 2;
-its model is named by the owner before `RAD-11` sign-off.
+branches for the whole port. A physical iPhone is required from phase 2; its
+model is named by the owner before `RAD-11` sign-off.
+
+## Device matrix
+
+| Role | Device |
+| --- | --- |
+| CI build + hosted unit tests | iPhone 17 simulator, latest iOS runtime |
+| Visual review, phone | iPhone 17e (small) and iPhone 17 Pro Max (large) |
+| Visual review, tablet | iPad mini (A17 Pro) and iPad Pro 11-inch (M5) |
+| Physical device | Required from phase 2; model named by the owner before `RAD-11` |
+
+Reference captures are `FND-02`; the visual review runs in `QA-02`. Portrait and
+landscape are both in scope for every role.
 
 ## Requirements
 
