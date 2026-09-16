@@ -129,24 +129,33 @@ final class PodcastsModel {
             let country = { if case .top(let c) = query { return c.isEmpty ? "us" : c } else { return "us" } }()
             do {
                 try Task.checkCancellation()
+                // Each write waits for its network answer and then checks the
+                // token: a superseded reset must leave no state behind.
                 switch query {
                 case .top:
-                    chartCursor = try await PodcastDirectory.chartIds(
+                    let cursor = try await PodcastDirectory.chartIds(
                         country: country, transport: directoryTransport
                     )
-                    for genre in PodcastDirectory.genres {
-                        chartQueue.append { [directoryTransport] in
+                    guard token == generation else { return }
+                    chartCursor = cursor
+                    let queue: [@Sendable () async throws -> [String]] = PodcastDirectory.genres.map { genre in
+                        { @Sendable [directoryTransport] in
                             try await PodcastDirectory.chartIds(
                                 country: country, genreId: genre.id, transport: directoryTransport
                             )
                         }
                     }
+                    guard token == generation else { return }
+                    chartQueue = queue
                 case .search(let text):
-                    pending = try await PodcastDirectory.search(term: text, transport: directoryTransport)
+                    let results = try await PodcastDirectory.search(term: text, transport: directoryTransport)
+                    guard token == generation else { return }
+                    pending = results
                 case .category(let genre):
-                    pending = try await PodcastDirectory.byGenre(genre, transport: directoryTransport)
+                    let results = try await PodcastDirectory.byGenre(genre, transport: directoryTransport)
+                    guard token == generation else { return }
+                    pending = results
                 }
-                guard token == generation else { return }
             } catch {
                 loading = false
                 // A snapshot already on screen is better than an error.
