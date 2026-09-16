@@ -159,6 +159,9 @@ final class ProvidersModel {
         )
         do {
             let count = try await scan.run(session)
+            // Cancellation or a newer scan must not overwrite the index with
+            // a partial walk.
+            try Task.checkCancellation()
             index.commit(
                 accountId: account.id,
                 folders: config.folders,
@@ -168,6 +171,9 @@ final class ProvidersModel {
             statuses[account.id] = SftpScanStatus(scanning: false, text: "\(count) tracks indexed")
             indexVersion += 1
             return .success(count)
+        } catch is CancellationError {
+            statuses[account.id] = SftpScanStatus(scanning: false, text: "scan cancelled")
+            return .failure(CancellationError())
         } catch {
             let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             statuses[account.id] = SftpScanStatus(scanning: false, text: message)

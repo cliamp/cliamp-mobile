@@ -345,13 +345,27 @@ struct SftpScanTests {
         }
     }
 
+    private struct UnknownError: Error {}
+
+    @Test("an unclassified error at any depth fails the scan")
+    func unknownErrorsFail() async {
+        let tree = FakeTree(entries: [
+            "/m": [directory("/m/Album")],
+            "/m/Album": [file("/m/Album/a.mp3")],
+        ])
+        tree.failures["/m/Album"] = UnknownError()
+        await #expect(throws: UnknownError.self) {
+            try await collect(SftpScan(folders: ["/m"], onBatch: { _ in }), tree)
+        }
+    }
+
     @Test("a missing subdirectory is still skipped, not fatal")
     func missingSubdirectoryRecovers() async throws {
         let tree = FakeTree(entries: [
             "/m": [directory("/m/Gone"), directory("/m/Here")],
             "/m/Here": [file("/m/Here/a.mp3")],
         ])
-        tree.failures["/m/Gone"] = SshError.missing("/m/Gone")
+        tree.failures["/m/Gone"] = SshError.directoryUnreadable("/m/Gone")
         let tracks = try await collect(SftpScan(folders: ["/m"], onBatch: { _ in }), tree)
         #expect(tracks.map(\.path) == ["/m/Here/a.mp3"])
     }

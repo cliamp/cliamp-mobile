@@ -103,6 +103,8 @@ public struct SftpScan: Sendable {
                 lastError = error
             }
         }
+        // A cancelled walk must not publish a partial batch or a count.
+        try Task.checkCancellation()
         flush(&state)
         if state.found == 0, let rootError = state.rootError { throw rootError }
         if walked == 0, let lastError { throw lastError }
@@ -169,11 +171,15 @@ public struct SftpScan: Sendable {
     }
 
     /// A directory the server refused or that vanished is normal; a refused
-    /// credential, an unreachable host or a bad host key is not.
+    /// credential, an unreachable host, a bad host key, or any error the
+    /// session did not classify is not: unknown errors fail the scan rather
+    /// than silently producing an empty index.
     static func isRecoverable(_ error: Error) -> Bool {
-        guard let ssh = error as? SshError else { return true }
-        if case .missing = ssh { return true }
-        return false
+        guard let ssh = error as? SshError else { return false }
+        switch ssh {
+        case .missing, .directoryUnreadable: return true
+        default: return false
+        }
     }
 
     private enum Kind {

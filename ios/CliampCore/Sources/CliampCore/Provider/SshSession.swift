@@ -1,5 +1,6 @@
 @preconcurrency import Citadel
 import Crypto
+import NIOPosix
 @preconcurrency import NIOSSH
 import Foundation
 import NIOCore
@@ -16,6 +17,9 @@ public enum SshError: Error, LocalizedError, Sendable {
     case noMusicFolder
     case notAFolder(String)
     case missing(String)
+    /// A directory the walk could not read (permissions, a stale mount):
+    /// normal mid-scan, so the scanner skips it instead of failing.
+    case directoryUnreadable(String)
     case validation(String)
 
     public var errorDescription: String? {
@@ -36,6 +40,8 @@ public enum SshError: Error, LocalizedError, Sendable {
             "not a folder on the server: \(folders)"
         case .missing(let path):
             "no such file: \(path)"
+        case .directoryUnreadable(let message):
+            message
         case .validation(let message):
             message
         }
@@ -102,16 +108,39 @@ private final class AccountAuthentication: NIOSSHClientUserAuthenticationDelegat
     }
 }
 
+/// A connected transport plus the event loop group its channels run on. The
+/// group is owned here because Citadel's connect helper leaks the channel when
+/// a handshake fails; shutting the group down closes whatever it left behind.
+private final class SshTransport: @unchecked Sendable {
+    let group: MultiThreadedEventLoopGroup
+    let client: SSHClient
+    let sftp: SFTPClient
+
+    init(group: MultiThreadedEventLoopGroup, client: SSHClient, sftp: SFTPClient) {
+        self.group = group
+        self.client = client
+        self.sftp = sftp
+    }
+
+    func shutdown() async {
+        try? await sftp.close()
+        try? await client.close()
+        try? await group.shutdownGracefully()
+    }
+}
+
 /// One SSH connection's SFTP session. Actor-owned because Citadel's client
 /// types are not Sendable; every call serializes here, which is also what a
 /// single SFTP channel wants.
 public actor SshSession: RemoteFileTree {
     private let config: SshConfig
-    private var client: SSHClient?
-    private var sftp: SFTPClient?
+    private var transport: SshTransport?
     /// The connection being established, shared by concurrent first callers so
     /// actor reentrancy cannot open (and then lose) several transports.
-    private var connecting: Task<SFTPClient, Error>?
+    private var connecting: Task<SshTransport, Error>?
+    /// Bumped by every close, so a connection that lands after shutdown is
+    /// discarded instead of resurrecting the session.
+    private var generation = 0
     /// Directory listings leak their remote handles in the SFTP client we
     /// depend on (Citadel never sends CLOSE for OPENDIR), so the channel is
     /// recycled periodically: closing it reclaims every leaked handle at once.
@@ -127,22 +156,21 @@ public actor SshSession: RemoteFileTree {
     // MARK: connecting
 
     private func channel() async throws -> SFTPClient {
-        if let sftp { return sftp }
-        if let connecting { return try await connecting.value }
+        if let transport { return transport.sftp }
+        if let connecting {
+            let established = try await connecting.value
+            return try await publish(established, generation: generation)
+        }
         let config = self.config
         let validator = PinnedHostKey(expected: config.fingerprint)
-        let task = Task<SFTPClient, Error>.detached {
+        let generation = self.generation
+        let task = Task<SshTransport, Error>.detached {
             try await Self.connect(config: config, validator: validator)
         }
         connecting = task
         do {
-            let sftp = try await task.value
-            guard !Task.isCancelled else {
-                try? await sftp.close()
-                throw CancellationError()
-            }
-            self.sftp = sftp
-            connecting = nil
+            let established = try await task.value
+            let sftp = try await publish(established, generation: generation)
             fingerprint = config.fingerprint.isEmpty
                 ? validator.learnedFingerprint
                 : config.fingerprint
@@ -154,29 +182,49 @@ public actor SshSession: RemoteFileTree {
         }
     }
 
-    private static func connect(config: SshConfig, validator: PinnedHostKey) async throws -> SFTPClient {
+    /// Takes ownership of a freshly established connection, or shuts it down
+    /// when the session was closed (or replaced) while it was connecting.
+    private func publish(_ established: SshTransport, generation establishedGeneration: Int) async throws -> SFTPClient {
+        guard establishedGeneration == generation, !Task.isCancelled else {
+            await established.shutdown()
+            throw CancellationError()
+        }
+        transport = established
+        connecting = nil
+        return established.sftp
+    }
+
+    private static func connect(config: SshConfig, validator: PinnedHostKey) async throws -> SshTransport {
         let offers = try offers(for: config)
         let auth = AccountAuthentication(username: config.user, offers: offers)
-        let settings = SSHClientSettings(
+        // A dedicated group per session: Citadel's connect helper never closes
+        // a channel whose handshake failed, so the group is what guarantees
+        // those sockets cannot outlive the attempt.
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        var settings = SSHClientSettings(
             host: config.host,
             port: config.port,
             authenticationMethod: { SSHAuthenticationMethod.custom(auth) },
             hostKeyValidator: .custom(validator)
         )
-        let client: SSHClient
+        settings.group = group
         do {
-            client = try await SSHClient.connect(to: settings)
+            let client = try await SSHClient.connect(to: settings)
+            try Task.checkCancellation()
+            let sftp = try await client.openSFTP()
+            try Task.checkCancellation()
+            return SshTransport(group: group, client: client, sftp: sftp)
         } catch let error as SshError {
+            try? await group.shutdownGracefully()
             throw error
         } catch is InvalidHostKey {
+            try? await group.shutdownGracefully()
             throw SshError.hostKeyMismatch(expected: config.fingerprint, actual: "")
+        } catch is CancellationError {
+            try? await group.shutdownGracefully()
+            throw CancellationError()
         } catch {
-            throw failure(error)
-        }
-        do {
-            return try await client.openSFTP()
-        } catch {
-            try? await client.close()
+            try? await group.shutdownGracefully()
             throw failure(error)
         }
     }
@@ -184,12 +232,20 @@ public actor SshSession: RemoteFileTree {
     /// Recycles the SFTP channel every so many listings, reclaiming the
     /// directory handles the dependency leaks.
     private func recycleIfNeeded() async {
-        guard listingsSinceRecycle >= 200, let client else { return }
+        guard listingsSinceRecycle >= 200, let transport else { return }
         listingsSinceRecycle = 0
-        let old = sftp
-        sftp = nil
-        try? await old?.close()
-        sftp = try? await client.openSFTP()
+        try? await transport.sftp.close()
+        do {
+            let fresh = try await transport.client.openSFTP()
+            self.transport = SshTransport(
+                group: transport.group, client: transport.client, sftp: fresh
+            )
+        } catch {
+            // A channel that cannot be reopened is worse than a stale one:
+            // drop the whole connection so the next call reconnects.
+            self.transport = nil
+            await transport.shutdown()
+        }
     }
 
     /// Turns Citadel's transport errors into the wizard's wording.
@@ -227,24 +283,24 @@ public actor SshSession: RemoteFileTree {
             if let ed25519 = try? Curve25519.Signing.PrivateKey(sshEd25519: key, decryptionKey: passphrase) {
                 return [.privateKey(.init(privateKey: .init(ed25519Key: ed25519)))]
             }
-            if let rsa = try? Insecure.RSA.PrivateKey(sshRsa: key, decryptionKey: passphrase) {
-                // RSA offers sign with ssh-rsa (SHA-1) here; servers that have
-                // disabled that algorithm refuse it. Ed25519 is preferred.
-                return [.privateKey(.init(privateKey: .init(custom: rsa)))]
-            }
+            // RSA is refused deliberately: the SFTP stack we build on signs
+            // ssh-rsa (SHA-1) only, which modern OpenSSH servers reject, so
+            // offering it would fail with a misleading credential error.
+            // Android's sshj does support RSA; recorded in DEC-05.
             throw SshError.keyUnreadable(
-                "unsupported or malformed key (ed25519 and RSA OpenSSH keys work), or the passphrase is wrong"
+                "only ed25519 keys are supported so far (ssh-keygen -t ed25519); "
+                    + "the key is malformed, or its passphrase is wrong"
             )
         }
     }
 
     public func close() async {
+        generation += 1
         connecting?.cancel()
         connecting = nil
-        if let sftp { try? await sftp.close() }
-        if let client { try? await client.close() }
-        sftp = nil
-        client = nil
+        let transport = self.transport
+        self.transport = nil
+        await transport?.shutdown()
     }
 
     // MARK: RemoteFileTree
@@ -281,6 +337,12 @@ public actor SshSession: RemoteFileTree {
             }
             return entries
         } catch {
+            if error is CancellationError { throw CancellationError() }
+            // A refused or vanished directory is a per-directory problem the
+            // scan skips; anything else (transport, auth) must propagate.
+            if error is SFTPError {
+                throw SshError.directoryUnreadable("cannot list \(path)")
+            }
             throw Self.failure(error)
         }
     }
