@@ -40,7 +40,7 @@ struct StationArtView: View {
                 case .podcast:
                     GlyphPlate(CliampIcons.podRow, size: min(size, 40))
                 case .podcastStandalone:
-                    CliampIcon(CliampIcons.podRow, size: min(size, 40), tint: palette.inkFaint)
+                    CliampIcon(CliampIcons.podsTab, size: min(size, 40), tint: palette.inkFaint)
                 case .music:
                     GlyphPlate(CliampIcons.musicNote, size: size)
                 case .plate:
