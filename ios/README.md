@@ -64,6 +64,12 @@ xcodebuild test -project Cliamp.xcodeproj -scheme Cliamp \
   CODE_SIGNING_ALLOWED=NO
 ```
 
+The app icon is generated, not hand-drawn: `swift tools/make_appicon.swift
+Cliamp/Resources/Assets.xcassets/AppIcon.appiconset/icon-1024.png` rebuilds it
+from the same geometry as Android's adaptive icon (oxide bevel ground, the
+six-bar mark in cream). The launch screen uses the flat `LaunchBackground`
+colour from the same catalog.
+
 `project.yml` is the only project source; regenerate after changing targets,
 settings, or `Info.plist` keys instead of editing the generated project.
 
