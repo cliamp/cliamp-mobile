@@ -79,11 +79,20 @@ final class SystemPlayback {
         let center = MPNowPlayingInfoCenter.default()
         var info = center.nowPlayingInfo ?? [:]
         if let image {
-            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+            info[MPMediaItemPropertyArtwork] = Self.artwork(for: image)
         } else {
             info.removeValue(forKey: MPMediaItemPropertyArtwork)
         }
         center.nowPlayingInfo = info
+    }
+
+    /// MediaPlayer invokes the request handler on its own queue while
+    /// serializing now-playing info for the lock screen, so the closure must
+    /// not inherit this class's MainActor isolation - doing so trips
+    /// `dispatch_assert_queue` on the first directory station with artwork.
+    /// Returning the decoded image is safe off the main thread.
+    nonisolated static func artwork(for image: UIImage) -> MPMediaItemArtwork {
+        MPMediaItemArtwork(boundsSize: image.size) { _ in image }
     }
 
     private func configureCommands() {
