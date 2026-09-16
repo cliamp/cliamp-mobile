@@ -103,6 +103,48 @@ struct LocalLibraryTests {
         #expect(local.cachedSongs() == nil)
     }
 
+    @Test("hidden files and document packages stay out of the scan")
+    func hiddenAndPackages() async throws {
+        let root = temporaryRoot()
+        try writeWav(at: root.appendingPathComponent("Music/Real.wav"))
+        try writeWav(at: root.appendingPathComponent("Deck.rtfd/Inside.wav"))
+        try writeWav(at: root.appendingPathComponent("Take.band/Session.wav"))
+        try writeWav(at: root.appendingPathComponent("Music/.hidden.wav"))
+        // A Finder-hidden file has flags, not a dot name.
+        let flagged = root.appendingPathComponent("Music/flagged.wav")
+        try writeWav(at: flagged)
+        try (flagged as NSURL).setResourceValue(true, forKey: .isHiddenKey)
+
+        let songs = await library(in: root).scan()
+        #expect(songs.map(\.title) == ["Real"])
+    }
+
+    @Test("a directory standing in for a cached file is dropped")
+    func cacheRejectsDirectories() async throws {
+        let root = temporaryRoot()
+        try writeWav(at: root.appendingPathComponent("Song.wav"))
+        let local = library(in: root)
+        local.save(await local.scan())
+        try FileManager.default.removeItem(at: root.appendingPathComponent("Song.wav"))
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("Song.wav"), withIntermediateDirectories: true
+        )
+        #expect(local.cachedSongs() == nil)
+    }
+
+    @Test("a directory named cover.jpg cannot win over a real folder.png")
+    func coverRejectsDirectories() async throws {
+        let root = temporaryRoot()
+        try writeWav(at: root.appendingPathComponent("Album/Song.wav"))
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("Album/cover.jpg"), withIntermediateDirectories: true
+        )
+        try Data("png".utf8).write(to: root.appendingPathComponent("Album/folder.png"))
+
+        let songs = await library(in: root).scan()
+        #expect(songs.first?.cover == "Album/folder.png")
+    }
+
     @Test("folder covers prefer canonical names and fall back to any image")
     func folderCovers() async throws {
         let root = temporaryRoot()

@@ -120,9 +120,7 @@ public final class LocalLibrary: Sendable {
         guard let data = try? Data(contentsOf: cache),
               let songs = try? JSONDecoder().decode([LocalSong].self, from: data)
         else { return nil }
-        let existing = songs.filter {
-            FileManager.default.fileExists(atPath: fileURL($0.relativePath).path)
-        }
+        let existing = songs.filter { Self.isRegularFile(fileURL($0.relativePath)) }
         return existing.isEmpty ? nil : existing
     }
 
@@ -191,20 +189,29 @@ public final class LocalLibrary: Sendable {
         let manager = FileManager.default
         let contents = (try? manager.contentsOfDirectory(atPath: directory)) ?? []
         for name in contents where !name.hasPrefix(".") {
-            let child = directory + "/" + name
-            guard let attributes = try? manager.attributesOfItem(atPath: child),
-                  attributes[.type] as? FileAttributeType != .typeSymbolicLink
-            else { continue }
             let childRelative = relative.isEmpty ? name : relative + "/" + name
-            if (attributes[.type] as? FileAttributeType) == .typeDirectory {
-                guard !["app", "bundle", "framework"].contains(
-                    (name as NSString).pathExtension.lowercased()
-                ) else { continue }
-                walk(child, relative: childRelative, into: &files)
-            } else if Self.audioExtensions.contains((name as NSString).pathExtension.lowercased()) {
+            let childURL = URL(fileURLWithPath: directory + "/" + name)
+            let values = try? childURL.resourceValues(forKeys: [
+                .isHiddenKey, .isPackageKey, .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
+            ])
+            guard let values, values.isSymbolicLink != true, values.isHidden != true else { continue }
+            // Finder-hidden names (a `hidden` flag, not a dot prefix) and
+            // document packages (.photoslibrary, .rtfd, …) stay out.
+            guard values.isPackage != true else { continue }
+            if values.isDirectory == true {
+                walk(childURL.path, relative: childRelative, into: &files)
+            } else if values.isRegularFile == true,
+                      Self.audioExtensions.contains((name as NSString).pathExtension.lowercased()) {
                 files.append(childRelative)
             }
         }
+    }
+
+    /// A regular file, not a directory or symlink, following Android's
+    /// `File.isFile` checks.
+    private static func isRegularFile(_ url: URL) -> Bool {
+        let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        return values?.isRegularFile == true && values?.isSymbolicLink != true
     }
 
     /// Reads one file's tags, falling back to the filename for the title and
@@ -224,7 +231,11 @@ public final class LocalLibrary: Sendable {
         let artist = await metadata.first(id: .commonIdentifierArtist)
         let album = await metadata.first(id: .commonIdentifierAlbumName)
         let seconds = await duration?.seconds ?? 0
-        let durationMs = seconds.isFinite && seconds > 0 ? Int64(seconds * 1000) : 0
+        // Anything longer than a few days is a bogus header; the cap also
+        // keeps the Int64 conversion from overflowing.
+        let durationMs = seconds.isFinite && seconds > 0 && seconds < 400_000
+            ? Int64(seconds * 1000)
+            : 0
         let base = (fileName as NSString).deletingPathExtension
         return LocalSong(
             relativePath: relativePath,
@@ -244,13 +255,14 @@ public final class LocalLibrary: Sendable {
         let directoryURL = fileURL(directory)
         for name in Self.coverNames {
             let candidate = directoryURL.appendingPathComponent(name)
-            if manager.fileExists(atPath: candidate.path) {
+            if Self.isRegularFile(candidate) {
                 return join(directory, name)
             }
         }
         let contents = (try? manager.contentsOfDirectory(atPath: directoryURL.path)) ?? []
-        guard let image = contents.first(where: {
-            ["jpg", "jpeg", "png"].contains(($0 as NSString).pathExtension.lowercased())
+        guard let image = contents.first(where: { name in
+            ["jpg", "jpeg", "png"].contains((name as NSString).pathExtension.lowercased())
+                && Self.isRegularFile(directoryURL.appendingPathComponent(name))
         }) else { return nil }
         return join(directory, image)
     }
@@ -289,7 +301,7 @@ private extension Array where Element == AVMetadataItem {
         let items = AVMetadataItem.metadataItems(from: self, filteredByIdentifier: id)
         for item in items {
             if let value = try? await item.load(.stringValue),
-               !value.trimmingCharacters(in: .whitespaces).isEmpty {
+               !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 return value
             }
         }
