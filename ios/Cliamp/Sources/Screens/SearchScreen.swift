@@ -180,7 +180,8 @@ struct SearchScreen: View {
 
     private func fallback(_ hit: SearchHit) -> StationArtFallback {
         switch hit {
-        case .song, .favorite, .station: .glyph
+        case .song, .favorite: .music
+        case .station: .glyph
         case .episode, .show: .podcast
         }
     }

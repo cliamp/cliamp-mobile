@@ -134,6 +134,42 @@ struct RadioNavigatorTests {
         )
     }
 
+    @Test("a history jump cancels a pending burst")
+    func historyCancelsPending() {
+        var navigator = RadioNavigator()
+        navigator.recordPlay(a)
+        navigator.recordPlay(b)
+        // Two rapid Next taps leave a pending target behind.
+        #expect(
+            navigator.next(walk: ring, ring: true, allowRedo: true, currentIndex: nil, current: b, nowMs: 0)
+                != .schedule
+        )
+        #expect(
+            navigator.next(walk: ring, ring: true, allowRedo: true, currentIndex: nil, current: b, nowMs: 50)
+                == .schedule
+        )
+        // A Previous history jump must discard that pending target.
+        #expect(
+            navigator.previous(walk: ring, ring: true, currentIndex: nil, current: b, nowMs: 80)
+                == .play(a, index: 0)
+        )
+        #expect(navigator.takePending(walk: ring) == nil)
+    }
+
+    @Test("a history item outside the walked list reports no occurrence")
+    func historyOutsideSource() {
+        var navigator = RadioNavigator()
+        let d = Station(id: "d", name: "D", url: "https://d.example/stream", source: .directory)
+        navigator.recordPlay(d)
+        navigator.recordPlay(a)
+        // Walk only knows [B, C]; D is a foreign context.
+        #expect(
+            navigator.previous(
+                walk: [b, c], ring: false, currentIndex: nil, current: a, nowMs: 0
+            ) == .play(d, index: -1)
+        )
+    }
+
     @Test("the session log is capped at 100")
     func pastCap() {
         var navigator = RadioNavigator()

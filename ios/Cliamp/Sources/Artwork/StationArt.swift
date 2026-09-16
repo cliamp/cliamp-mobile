@@ -5,6 +5,9 @@ import SwiftUI
 enum StationArtFallback {
     case glyph
     case podcast
+    /// The bare muted glyph, no plate, for show headers.
+    case podcastStandalone
+    case music
     case plate
 }
 
@@ -36,6 +39,10 @@ struct StationArtView: View {
                     GlyphPlate(CliampIcons.stationsTab, size: size)
                 case .podcast:
                     GlyphPlate(CliampIcons.podRow, size: min(size, 40))
+                case .podcastStandalone:
+                    CliampIcon(CliampIcons.podRow, size: min(size, 40), tint: palette.inkFaint)
+                case .music:
+                    GlyphPlate(CliampIcons.musicNote, size: size)
                 case .plate:
                     ArtPlate(radius: corner)
                         .overlay(

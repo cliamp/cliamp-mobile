@@ -378,7 +378,10 @@ final class RadioPlayer {
             walk: walk, ring: ring, allowRedo: source.isEmpty,
             currentIndex: sourceIndex, current: station, nowMs: nowMs()
         ) {
-        case .play(let target, let index): commitNavigation(target, index: index, walk: walk)
+        case .play(let target, let index):
+            navTask?.cancel()
+            navTask = nil
+            commitNavigation(target, index: index, walk: walk)
         case .schedule: schedulePending()
         case .ignore: break
         }
@@ -392,7 +395,10 @@ final class RadioPlayer {
         switch navigator.previous(
             walk: walk, ring: ring, currentIndex: sourceIndex, current: station, nowMs: nowMs()
         ) {
-        case .play(let target, let index): commitNavigation(target, index: index, walk: walk)
+        case .play(let target, let index):
+            navTask?.cancel()
+            navTask = nil
+            commitNavigation(target, index: index, walk: walk)
         case .schedule: schedulePending()
         case .ignore: break
         }
@@ -409,6 +415,16 @@ final class RadioPlayer {
     /// `startPlayback(..., preserveOrder = true)` does, so recency updates
     /// cannot reshuffle the walk under the next tap.
     private func commitNavigation(_ target: Station, index: Int, walk: [Station]) {
+        // A history jump to something outside the walked list is a foreign
+        // context: start it as a fresh single, not an index-0 alias.
+        if index < 0 {
+            source = [target]
+            sourceIndex = 0
+            sourceContextKey = nil
+            ringFallback = false
+            begin(target)
+            return
+        }
         if source.isEmpty {
             source = walk
             ringFallback = true

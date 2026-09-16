@@ -61,7 +61,7 @@ struct PodcastShowScreen: View {
                 StationArtSquare(
                     station: currentShow.artStation,
                     corner: CliampShape.small,
-                    fallback: .podcast
+                    fallback: .podcastStandalone
                 )
                 .frame(width: 140, height: 140)
                     .overlay(

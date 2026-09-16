@@ -24,6 +24,13 @@ struct FuzzyTests {
         #expect(Fuzzy.score(query: "zzz", haystack: "Alan Walker") == Int.max)
     }
 
+    @Test("folded characters still match and highlight the right character")
+    func unicode() {
+        #expect(Fuzzy.match(query: "ist", haystack: "İstanbul") != nil)
+        // "İ" folds to two scalars, so a naive mapping would highlight "t".
+        #expect(Fuzzy.matchedPositions(query: "s", haystack: "İstanbul") == [1])
+    }
+
     @Test("matched positions point at the characters that formed the match")
     func positions() {
         #expect(Fuzzy.matchedPositions(query: "aln", haystack: "Alan") == [0, 1, 3])

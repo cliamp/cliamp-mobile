@@ -50,6 +50,27 @@ struct MainShell: View {
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
 
+            if !podcastPath.isEmpty {
+                // A show detail is a destination above the pager, the way
+                // Android pushes it over Home: the pager cannot be swiped
+                // underneath while it is open.
+                NavigationStack(path: $podcastPath) {
+                    Color.clear
+                        .navigationDestination(for: PodcastShow.self) { show in
+                            PodcastShowScreen(
+                                player: player,
+                                podcasts: PodcastServices.shared.podcasts,
+                                downloads: PodcastServices.shared.downloads,
+                                show: show,
+                                onOpenSearch: { showSearch = true },
+                                onOpenSettings: onOpenSettings
+                            )
+                            .toolbar(.hidden, for: .navigationBar)
+                        }
+                }
+                .toolbar(.hidden, for: .navigationBar)
+            }
+
             if showSearch {
                 // The finder is a page over the permanent chrome, like
                 // Android's Search destination: mini player and tab stay.
@@ -70,27 +91,6 @@ struct MainShell: View {
             if showSettings {
                 // Settings is a page over the chrome too, like Android.
                 SettingsScreen(app: app, onBack: { showSettings = false })
-            }
-
-            if !podcastPath.isEmpty {
-                // A show detail is a destination above the pager, the way
-                // Android pushes it over Home: the pager cannot be swiped
-                // underneath while it is open.
-                NavigationStack(path: $podcastPath) {
-                    Color.clear
-                        .navigationDestination(for: PodcastShow.self) { show in
-                            PodcastShowScreen(
-                                player: player,
-                                podcasts: PodcastServices.shared.podcasts,
-                                downloads: PodcastServices.shared.downloads,
-                                show: show,
-                                onOpenSearch: { showSearch = true },
-                                onOpenSettings: onOpenSettings
-                            )
-                            .toolbar(.hidden, for: .navigationBar)
-                        }
-                }
-                .toolbar(.hidden, for: .navigationBar)
             }
         }
     }

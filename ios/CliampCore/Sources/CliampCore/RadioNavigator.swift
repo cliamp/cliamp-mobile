@@ -54,8 +54,9 @@ public struct RadioNavigator: Sendable {
     ) -> RadioNavDecision {
         if allowRedo, ring, canGoForward {
             pastIndex += 1
+            cancelPending()
             let station = past[pastIndex]
-            return .play(station, index: walk.firstIndex(of: station) ?? 0)
+            return .play(station, index: walk.firstIndex(of: station) ?? -1)
         }
         return step(+1, walk: walk, ring: ring, currentIndex: currentIndex, current: current, nowMs: nowMs)
     }
@@ -67,8 +68,9 @@ public struct RadioNavigator: Sendable {
     ) -> RadioNavDecision {
         if canGoBack {
             pastIndex -= 1
+            cancelPending()
             let station = past[pastIndex]
-            return .play(station, index: walk.firstIndex(of: station) ?? 0)
+            return .play(station, index: walk.firstIndex(of: station) ?? -1)
         }
         return step(-1, walk: walk, ring: ring, currentIndex: currentIndex, current: current, nowMs: nowMs)
     }

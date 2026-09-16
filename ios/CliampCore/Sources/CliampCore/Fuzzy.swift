@@ -52,18 +52,21 @@ public enum Fuzzy {
         return total
     }
 
-    /// Character positions that matched, for highlight rendering.
+    /// Character positions that matched, for highlight rendering. Folding can
+    /// expand a character ("İ" lowercases to i plus a combining dot), so the
+    /// folded scalar sequence is mapped back to the original character that
+    /// produced each scalar.
     public static func matchedPositions(query: String, haystack: String) -> Set<Int>? {
         guard let scalarHits = match(query: query, haystack: haystack) else { return nil }
-        let matched = Set(scalarHits)
-        var result = Set<Int>()
-        var scalarIndex = 0
+        var owner: [Int] = [] // folded scalar index -> original character index
         for (characterIndex, character) in haystack.enumerated() {
-            let width = character.unicodeScalars.count
-            if (scalarIndex..<(scalarIndex + width)).contains(where: matched.contains) {
-                result.insert(characterIndex)
+            for _ in character.lowercased().unicodeScalars {
+                owner.append(characterIndex)
             }
-            scalarIndex += width
+        }
+        var result = Set<Int>()
+        for hit in scalarHits where owner.indices.contains(hit) {
+            result.insert(owner[hit])
         }
         return result
     }
