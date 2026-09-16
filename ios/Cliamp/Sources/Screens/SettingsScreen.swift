@@ -45,7 +45,7 @@ struct SettingsScreen: View {
                         selected: app.visualizer
                     ) { app.visualizer = $0 }
 
-                    SectionLabel("themes — 6")
+                    SectionLabel("themes — \(themeRows.count)")
                     ForEach(themeRows, id: \.key) { row in
                         ThemeRow(
                             key: row.key,
@@ -75,7 +75,7 @@ struct SettingsScreen: View {
     }
 
     private var themeRows: [(key: String, palette: CliampPalette)] {
-        [
+        var rows: [(key: String, palette: CliampPalette)] = [
             ("system", systemScheme == .dark ? CliampPalettes.oxide : CliampPalettes.oxideLight),
             ("oxide", CliampPalettes.oxide),
             ("oxide-light", CliampPalettes.oxideLight),
@@ -83,6 +83,12 @@ struct SettingsScreen: View {
             ("dark", CliampPalettes.dark),
             ("light", CliampPalettes.light),
         ]
+        rows.append(
+            contentsOf: OmarchyPalettes.keys.compactMap { key in
+                OmarchyPalettes.palettes[key].map { (key, $0) }
+            }
+        )
+        return rows
     }
 
     private var bufferRow: some View {

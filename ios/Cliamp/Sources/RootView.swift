@@ -53,6 +53,9 @@ struct RootView: View {
             if arguments.contains("-cliamp-preview-settings") {
                 showSettings = true
             }
+            if let index = arguments.firstIndex(of: "-cliamp-preview-palette"), index + 1 < arguments.count {
+                app.palettePreference = arguments[index + 1]
+            }
             #endif
         }
     }

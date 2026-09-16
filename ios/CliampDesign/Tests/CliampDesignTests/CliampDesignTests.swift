@@ -33,7 +33,7 @@ struct CliampPaletteTests {
 
     @Test("unknown keys fall back to oxide rather than throwing")
     func unknownFallback() {
-        #expect(cliampPalette(for: "nord", systemDark: true) == CliampPalettes.oxide)
+        #expect(cliampPalette(for: "not-a-theme", systemDark: true) == CliampPalettes.oxide)
         #expect(cliampPalette(for: "custom", systemDark: true) == CliampPalettes.oxide)
         #expect(
             cliampPalette(for: "custom", systemDark: false, custom: CliampPalettes.amber)

@@ -213,21 +213,21 @@ public enum CliampPalettes {
 }
 
 /// Resolves the stored theme preference the way `paletteFor` does in
-/// `Theme.kt`. Unknown keys fall back to oxide rather than throwing, and the
-/// Omarchy keys join the rotation in VIS-07.
+/// `Theme.kt`. Unknown keys fall back to oxide rather than throwing.
 public func cliampPalette(
     for preference: String,
     systemDark: Bool,
     custom: CliampPalette? = nil
 ) -> CliampPalette {
+    let fallback = systemDark ? CliampPalettes.oxide : CliampPalettes.oxideLight
     switch preference {
-    case "system": systemDark ? CliampPalettes.oxide : CliampPalettes.oxideLight
-    case "oxide": CliampPalettes.oxide
-    case "oxide-light": CliampPalettes.oxideLight
-    case "dark": CliampPalettes.dark
-    case "light": CliampPalettes.light
-    case "amber": CliampPalettes.amber
-    case "custom": custom ?? (systemDark ? CliampPalettes.oxide : CliampPalettes.oxideLight)
-    default: systemDark ? CliampPalettes.oxide : CliampPalettes.oxideLight
+    case "system": return fallback
+    case "oxide": return CliampPalettes.oxide
+    case "oxide-light": return CliampPalettes.oxideLight
+    case "dark": return CliampPalettes.dark
+    case "light": return CliampPalettes.light
+    case "amber": return CliampPalettes.amber
+    case "custom": return custom ?? fallback
+    default: return OmarchyPalettes.palettes[preference] ?? fallback
     }
 }
