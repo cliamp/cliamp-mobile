@@ -71,12 +71,20 @@ private struct PlaceholderTab: View {
     }
 }
 
-/// The lockscreen widget's in-app twin: art plate, title, one transport.
+/// The lockscreen widget's in-app twin: art (or the meter), title, one transport.
 struct MiniPlayerBar: View {
     @Environment(\.cliampPalette) private var palette
     let player: RadioPlayer
     let app: AppState
     let onOpen: () -> Void
+    @State private var meter: MeterModel
+
+    init(player: RadioPlayer, app: AppState, onOpen: @escaping () -> Void) {
+        self.player = player
+        self.app = app
+        self.onOpen = onOpen
+        _meter = State(initialValue: MeterModel(preset: .mini, player: player))
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -119,14 +127,23 @@ struct MiniPlayerBar: View {
             .onTapGesture(perform: onOpen)
         }
         .background(palette.panel)
+        .onAppear { meter.start() }
+        .onDisappear { meter.stop() }
     }
 
     private var art: some View {
-        ArtPlate()
-            .overlay(
-                CliampIcon(CliampIcons.stationsTab, size: 20, tint: palette.accent)
-            )
-            .frame(width: 40, height: 40)
+        Group {
+            if player.station != nil, app.visualizer != "off" {
+                BrickMeter(levels: meter.levels, peaks: meter.peaks, preset: .mini)
+                    .frame(width: 40, height: MeterPreset.mini.height)
+            } else {
+                ArtPlate()
+                    .overlay(
+                        CliampIcon(CliampIcons.stationsTab, size: 20, tint: palette.accent)
+                    )
+                    .frame(width: 40, height: 40)
+            }
+        }
     }
 
     private var statusLine: String {

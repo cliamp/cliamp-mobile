@@ -41,6 +41,9 @@ struct RootView: View {
                 player.play(CliampRadio.builtin[0])
                 showPlayer = true
             }
+            if arguments.contains("-cliamp-preview-playing") {
+                player.play(CliampRadio.builtin[0])
+            }
             if arguments.contains("-cliamp-preview-settings") {
                 showSettings = true
             }

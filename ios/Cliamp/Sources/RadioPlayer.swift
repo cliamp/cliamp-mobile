@@ -12,8 +12,13 @@ final class RadioPlayer {
     private let player = AVPlayer()
     private var timeControlObservation: NSKeyValueObservation?
     private var itemStatusObservation: NSKeyValueObservation?
+    private var tap: SpectrumTap?
     private var ticker: Timer?
     private var sessionConfigured = false
+
+    /// The latest 64-band FFT frame from the audio thread, empty when nothing
+    /// is flowing. The meters read it; nothing else should.
+    let spectrum = SpectrumStore()
 
     private(set) var station: Station?
     private(set) var playing = false
@@ -35,11 +40,24 @@ final class RadioPlayer {
         self.station = station
         error = nil
         elapsedMs = 0
+        spectrum.clear()
         guard let url = URL(string: station.url) else {
             error = "couldn't play that stream"
             return
         }
         let item = AVPlayerItem(url: url)
+        // A post-effects tap gives the meters the PCM that is actually
+        // playing, for the real FFT. If the tap cannot attach, the meter
+        // falls back to its idle stagger and audio is unaffected.
+        let spectrumTap = SpectrumTap(store: spectrum)
+        if let processor = spectrumTap.makeProcessingTap() {
+            let mix = AVMutableAudioMix()
+            let parameters = AVMutableAudioMixInputParameters()
+            parameters.audioTapProcessor = processor
+            mix.inputParameters = [parameters]
+            item.audioMix = mix
+            tap = spectrumTap
+        }
         itemStatusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
             let status = item.status
             let message = item.error?.localizedDescription

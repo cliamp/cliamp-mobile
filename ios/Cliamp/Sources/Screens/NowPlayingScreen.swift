@@ -9,6 +9,14 @@ struct NowPlayingScreen: View {
     let player: RadioPlayer
     let app: AppState
     let onClose: () -> Void
+    @State private var meter: MeterModel
+
+    init(player: RadioPlayer, app: AppState, onClose: @escaping () -> Void) {
+        self.player = player
+        self.app = app
+        self.onClose = onClose
+        _meter = State(initialValue: MeterModel(preset: .nowPlaying, player: player))
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -19,10 +27,10 @@ struct NowPlayingScreen: View {
                     Spacer(minLength: 8)
                     art(side: artSide)
                     Spacer().frame(height: 18)
-                    meta
-                    Spacer(minLength: 12)
                     statusStrip
-                    Spacer().frame(height: 16)
+                    Spacer().frame(height: 7)
+                    meta
+                    Spacer(minLength: 14)
                     transport
                     Spacer(minLength: 12)
                 }
@@ -32,22 +40,29 @@ struct NowPlayingScreen: View {
             }
         }
         .background(palette.ground)
+        .onAppear { meter.start() }
+        .onDisappear { meter.stop() }
     }
 
     private var topRow: some View {
         HStack(spacing: 8) {
             BackChevron(action: onClose)
             Spacer()
-            HStack(spacing: 6) {
-                CliampIcon(CliampIcons.queueTabLines, size: 14, tint: palette.inkFaint)
+            HStack(spacing: 8) {
+                CliampIcon(CliampIcons.queueTabLines, size: 14, tint: palette.accent)
                 Text("UP NEXT")
                     .cliampText(CliampType.chip)
-                    .foregroundStyle(palette.inkFaint)
+                    .foregroundStyle(palette.ink)
                 Text("0")
                     .cliampText(CliampType.chip)
                     .foregroundStyle(palette.inkFaint)
             }
-            .opacity(0.5)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .overlay(
+                RoundedRectangle(cornerRadius: CliampShape.small)
+                    .stroke(palette.chipBorder, lineWidth: 1)
+            )
         }
         .padding(.horizontal, cliampGutter)
         .frame(height: 48)
@@ -138,6 +153,10 @@ struct NowPlayingScreen: View {
 
     private var transport: some View {
         VStack(spacing: 11) {
+            if app.visualizer != "off" {
+                BrickMeter(levels: meter.levels, peaks: meter.peaks, preset: .nowPlaying)
+                    .frame(maxWidth: .infinity)
+            }
             StreamingRule(streamingLabel, color: statusColor, dim: !player.playing && player.error == nil)
             HStack {
                 Text(TimeFormat.clock(player.elapsedMs))
