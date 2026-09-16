@@ -407,10 +407,7 @@ private struct StationTile: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            ArtPlate()
-                .overlay(
-                    CliampIcon(CliampIcons.stationsTab, size: 26, tint: palette.accent)
-                )
+            StationArtSquare(station: station)
                 .overlay(alignment: .topTrailing) {
                     FavoriteStar(favorite: favorite, action: onToggleFavorite)
                         .padding(10)
@@ -433,7 +430,6 @@ private struct StationTile: View {
                             .stroke(palette.accent, lineWidth: 2)
                     }
                 }
-                .aspectRatio(1, contentMode: .fit)
             Text(station.name)
                 .cliampText(CliampType.rowPrimaryMedium)
                 .foregroundStyle(palette.ink)
@@ -457,25 +453,27 @@ private struct StationThumb: View {
     let playing: Bool
 
     var body: some View {
-        if active {
-            ZStack {
-                RoundedRectangle(cornerRadius: CliampShape.small)
-                    .stroke(palette.accent, lineWidth: 1)
-                RoundedRectangle(cornerRadius: CliampShape.tiny)
-                    .fill(palette.accent.opacity(0.92))
-                    .overlay(
-                        CliampIcon(
-                            playing ? CliampIcons.pause : CliampIcons.playRow,
-                            size: 9,
-                            tint: palette.onAccent
-                        )
-                    )
-                    .frame(width: 18, height: 18)
+        StationArtView(station: station, size: 40, fallback: .glyph)
+            .overlay {
+                if active {
+                    RoundedRectangle(cornerRadius: CliampShape.small)
+                        .stroke(palette.accent, lineWidth: 1)
+                }
             }
-            .frame(width: 40, height: 40)
-        } else {
-            GlyphPlate(CliampIcons.stationsTab, size: 40)
-        }
+            .overlay {
+                if active {
+                    RoundedRectangle(cornerRadius: CliampShape.tiny)
+                        .fill(palette.accent.opacity(0.92))
+                        .overlay(
+                            CliampIcon(
+                                playing ? CliampIcons.pause : CliampIcons.playRow,
+                                size: 9,
+                                tint: palette.onAccent
+                            )
+                        )
+                        .frame(width: 18, height: 18)
+                }
+            }
     }
 }
 

@@ -75,15 +75,7 @@ struct NowPlayingScreen: View {
     }
 
     private func art(side: CGFloat) -> some View {
-        ArtPlate(radius: CliampShape.medium)
-            .overlay(
-                CliampIcon(
-                    player.station?.source == .cliamp ? CliampIcons.mark : CliampIcons.stationsTab,
-                    size: side * 0.34,
-                    tint: palette.accent
-                )
-            )
-            .frame(width: side, height: side)
+        StationArtPlate(station: player.station, side: side)
             .frame(maxWidth: .infinity)
     }
 

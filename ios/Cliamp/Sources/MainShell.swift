@@ -1,6 +1,7 @@
 import CliampCore
 import CliampDesign
 import SwiftUI
+import UIKit
 
 /// The permanent chrome: mini player plus tabs, never removed for the whole
 /// session, with the landscape rail replacing the bottom bar.
@@ -78,6 +79,7 @@ struct MiniPlayerBar: View {
     let app: AppState
     let onOpen: () -> Void
     @State private var meter: MeterModel
+    @State private var artImage: UIImage?
 
     init(player: RadioPlayer, app: AppState, onOpen: @escaping () -> Void) {
         self.player = player
@@ -138,7 +140,13 @@ struct MiniPlayerBar: View {
 
     private var art: some View {
         Group {
-            if player.station != nil, app.visualizer != "off" {
+            if let artImage {
+                Image(uiImage: artImage)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 40, height: 40)
+                    .clipShape(RoundedRectangle(cornerRadius: CliampShape.medium))
+            } else if player.station != nil, app.visualizer != "off" {
                 BrickMeter(levels: meter.levels, peaks: meter.peaks, preset: .mini)
                     .frame(width: 40, height: MeterPreset.mini.height)
             } else {
@@ -147,6 +155,15 @@ struct MiniPlayerBar: View {
                         CliampIcon(CliampIcons.stationsTab, size: 20, tint: palette.accent)
                     )
                     .frame(width: 40, height: 40)
+            }
+        }
+        .task(id: player.station?.id) {
+            artImage = nil
+            guard let station = player.station else { return }
+            if let cached = StationArtwork.shared.cachedSmall(for: station) {
+                artImage = cached
+            } else {
+                artImage = await StationArtwork.shared.smallImage(for: station)
             }
         }
     }
