@@ -99,9 +99,10 @@ public final class PlaylistStore: @unchecked Sendable {
     }
 
     /// Android's `ORDER BY position, name` with position 0 everywhere.
-    /// SQLite's BINARY collation is case-sensitive, so uppercase sorts first.
+    /// SQLite's BINARY collation compares UTF-8 bytes, so comparisons are
+    /// case-sensitive and byte-lexicographic, not Swift's Unicode ordering.
     private static func ordered(_ list: [Playlist]) -> [Playlist] {
-        list.sorted { $0.name < $1.name }
+        list.sorted { $0.name.utf8.lexicographicallyPrecedes($1.name.utf8) }
     }
 
     public func playlist(slug: String) -> Playlist? {

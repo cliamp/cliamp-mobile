@@ -69,6 +69,9 @@ final class LibraryModel {
     private(set) var playlistSorts: [String: StationSort]
     /// Invalidates a scan that finished after a newer refresh began.
     private var scanGeneration = 0
+    /// The last detached cache write, so writes land in refresh order even
+    /// when their scans finish out of order.
+    private var pendingSave: Task<Void, Never>?
 
     /// Android's detail sort key for the downloads list; local songs share the
     /// library's key.
@@ -117,7 +120,15 @@ final class LibraryModel {
         let library = self.library
         let found = await library.scan()
         guard token == scanGeneration else { return }
-        await Task.detached(priority: .utility) { library.save(found) }.value
+        // Chain the write behind the previous one: a slow older save must not
+        // land after a newer snapshot.
+        let previous = pendingSave
+        let save = Task.detached(priority: .utility) {
+            await previous?.value
+            library.save(found)
+        }
+        pendingSave = save
+        await save.value
         // The save suspends too: a newer refresh or deletion may have landed
         // while it ran, and its result must win.
         guard token == scanGeneration else { return }

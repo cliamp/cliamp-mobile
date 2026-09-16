@@ -127,6 +127,14 @@ struct PlaylistStoreTests {
         #expect(store.unpinned().map(\.name) == ["Mix", "aardvark", "alpha"])
     }
 
+    @Test("ordering compares UTF-8 bytes like SQLite BINARY")
+    func byteOrdering() {
+        let store = store()
+        store.create(name: "zebra")
+        store.create(name: "e\u{301}clair") // decomposed é: 0x65 < 0x7A
+        #expect(store.all().map(\.name) == ["e\u{301}clair", "zebra"])
+    }
+
     @Test("duration labels read total minutes, never hours")
     func durationLabels() {
         #expect(TimeFormat.durationLabel(5_700_000) == "95:00")
