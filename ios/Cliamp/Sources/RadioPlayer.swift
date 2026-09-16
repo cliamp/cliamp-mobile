@@ -41,6 +41,11 @@ final class RadioPlayer {
     private var ringFallback = false
     /// Set when an audio interruption pauses something worth resuming.
     private var resumeAfterInterruption = false
+    /// The URL actually handed to AVPlayer: a playlist link resolves to this
+    /// before playback and retries reuse it instead of re-fetching.
+    private var streamURL: URL?
+    /// Distinguishes newer plays from playlist resolutions that finish late.
+    private var playGeneration = 0
 
     /// The latest 64-band FFT frame from the audio thread, empty when nothing
     /// is flowing. The meters read it; nothing else should.
@@ -121,7 +126,26 @@ final class RadioPlayer {
         navigator.recordPlay(station)
         updateNavigationAvailability()
         system?.refresh()
-        startStream(station: station, url: url)
+        playGeneration += 1
+        streamURL = nil
+        resolveStream(station: station, url: url, generation: playGeneration)
+    }
+
+    /// Directory entries sometimes point at an .m3u/.pls file rather than the
+    /// stream; resolve one hop off the main actor, then play. HLS and direct
+    /// URLs pass through untouched. While it resolves, the player reports
+    /// buffering so the transport is honest about the wait.
+    private func resolveStream(station: Station, url: URL, generation: Int) {
+        buffering = true
+        Task { [weak self] in
+            let resolved = await StreamResolver.resolve(url.absoluteString)
+            guard !Task.isCancelled, let self, generation == self.playGeneration,
+                  let target = URL(string: resolved)
+            else { return }
+            self.buffering = false
+            self.streamURL = target
+            self.startStream(station: station, url: target)
+        }
     }
 
     /// Builds a fresh item for [station] and plays it: the one path that ever
@@ -167,7 +191,10 @@ final class RadioPlayer {
             }
         }
         player.replaceCurrentItem(with: item)
-        player.play()
+        // A stream resolved after the user already paused loads silently.
+        if wantsToPlay {
+            player.play()
+        }
         icy.start(url: url) { [weak self] title in
             Task { @MainActor [weak self] in
                 self?.streamTitle = title
@@ -328,7 +355,7 @@ final class RadioPlayer {
         if let current = player.currentItem, current.status != .failed {
             player.play()
             resumeMetadata()
-        } else if let station, let url = URL(string: station.url) {
+        } else if let station, let url = streamURL ?? URL(string: station.url) {
             configureSessionIfNeeded()
             startStream(station: station, url: url)
         }
@@ -379,7 +406,7 @@ final class RadioPlayer {
             guard !Task.isCancelled, let self else { return }
             self.retryTask = nil
             guard self.wantsToPlay, let station = self.station,
-                  let url = URL(string: station.url)
+                  let url = self.streamURL ?? URL(string: station.url)
             else {
                 self.finishRecovery()
                 return
@@ -438,7 +465,7 @@ final class RadioPlayer {
         reconnecting = false
         error = nil
         system?.refresh()
-        guard let station, let url = URL(string: station.url) else { return }
+        guard let station, let url = streamURL ?? URL(string: station.url) else { return }
         startStream(station: station, url: url)
     }
 
