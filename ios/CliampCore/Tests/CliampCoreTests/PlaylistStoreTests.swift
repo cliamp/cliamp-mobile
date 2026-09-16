@@ -111,19 +111,27 @@ struct PlaylistStoreTests {
         #expect(Playlist.slugify("Mix ٢") == "mix-٢")
     }
 
-    @Test("playlists read in name order, pinned and unpinned alike")
+    @Test("playlists read in SQLite name order, pinned and unpinned alike")
     func ordering() {
         let store = store()
         store.create(name: "Zebra")
         store.create(name: "alpha")
         store.create(name: "Mix")
-        #expect(store.all().map(\.name) == ["alpha", "Mix", "Zebra"])
+        // BINARY collation: uppercase names sort before lowercase ones.
+        #expect(store.all().map(\.name) == ["Mix", "Zebra", "alpha"])
         store.setPinned(slug: "zebra", pinned: true)
         store.create(name: "Beat")
         #expect(store.pinned().map(\.name) == ["Zebra"])
-        #expect(store.unpinned().map(\.name) == ["alpha", "Beat", "Mix"])
-        store.rename(slug: "beat", name: "Aardvark")
-        #expect(store.unpinned().map(\.name) == ["Aardvark", "alpha", "Mix"])
+        #expect(store.unpinned().map(\.name) == ["Beat", "Mix", "alpha"])
+        store.rename(slug: "beat", name: "aardvark")
+        #expect(store.unpinned().map(\.name) == ["Mix", "aardvark", "alpha"])
+    }
+
+    @Test("duration labels read total minutes, never hours")
+    func durationLabels() {
+        #expect(TimeFormat.durationLabel(5_700_000) == "95:00")
+        #expect(TimeFormat.durationLabel(0) == "0:00")
+        #expect(TimeFormat.durationLabel(83_000) == "1:23")
     }
 
     @Test("resolveMembers drops members that no longer exist, in place")

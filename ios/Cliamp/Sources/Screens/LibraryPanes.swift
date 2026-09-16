@@ -62,6 +62,13 @@ struct SmartDetailScreen: View {
                 frozenRecent = app.history
             }
         }
+        .onChange(of: app.history) { _, updated in
+            // History can fill in after the pane opened; the first non-empty
+            // snapshot is the view Android's collector freezes on.
+            if kind == .recentlyPlayed, frozenRecent == nil, !updated.isEmpty {
+                frozenRecent = updated
+            }
+        }
         .onChange(of: model.folders().map(\.id)) { _, ids in
             if let folder, !ids.contains(folder) { self.folder = nil }
         }
@@ -327,8 +334,10 @@ struct PlaylistDetailScreen: View {
     let onOpenSettings: () -> Void
 
     @State private var addingNow = false
+    @State private var seededAdding = false
     @State private var photoItem: PhotosPickerItem?
     @State private var showPhotoPicker = false
+    @State private var coverToken = 0
 
     var body: some View {
         let playlist = model.playlist(slug: slug)
@@ -367,14 +376,25 @@ struct PlaylistDetailScreen: View {
             }
         }
         .background(palette.ground)
-        .onAppear { if adding { addingNow = true } }
+        .onAppear {
+            // The destination's seed opens the picker once; Done must stay
+            // done on later appearances.
+            if adding, !seededAdding {
+                seededAdding = true
+                addingNow = true
+            }
+        }
         .photosPicker(isPresented: $showPhotoPicker, selection: $photoItem, matching: .images)
         .onChange(of: photoItem) { _, item in
             guard let item else { return }
+            // A second pick supersedes the first: only the newest transfer
+            // may write, so a slow decode cannot overwrite the newer cover.
+            coverToken += 1
+            let token = coverToken
             Task {
-                if let data = try? await item.loadTransferable(type: Data.self) {
-                    model.setCover(slug: slug, data: data)
-                }
+                let data = try? await item.loadTransferable(type: Data.self)
+                guard token == coverToken else { return }
+                if let data { model.setCover(slug: slug, data: data) }
                 photoItem = nil
             }
         }
@@ -588,12 +608,7 @@ struct AddSongsView: View {
             } else {
                 ForEach(podcasts.episodes.filter(\.isFull), id: \.audioUrl) { episode in
                     let station = episode.station(show: show)
-                    toggleRow(
-                        station,
-                        subtitle: station.durationMs > 0
-                            ? TimeFormat.clock(station.durationMs)
-                            : "episode"
-                    )
+                    toggleRow(station, subtitle: TimeFormat.durationLabel(station.durationMs))
                 }
             }
         } else if podcasts.subscriptions.isEmpty {
@@ -687,12 +702,20 @@ struct ProvidersSongsPane: View {
     let onOpenSettings: () -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
-            CliampHeader("providers", onBack: onBack, onSearch: onOpenSearch, onSettings: onOpenSettings) {
-                EmptyView()
-            }
+        ScrollViewReader { proxy in
+            VStack(spacing: 0) {
+                CliampHeader(
+                    "providers",
+                    onBack: onBack,
+                    onSearch: onOpenSearch,
+                    onSettings: onOpenSettings,
+                    onTitleTap: { proxy.scrollTo(Self.topAnchor, anchor: .top) }
+                ) {
+                    EmptyView()
+                }
             ScrollView {
                 LazyVStack(spacing: 0) {
+                    Color.clear.frame(height: 0).id(Self.topAnchor)
                     SectionLabel("songs — 0") {
                         CliampIcon(CliampIcons.plus, size: 16, tint: palette.accent)
                             .frame(width: 34, height: 34)
@@ -712,9 +735,12 @@ struct ProvidersSongsPane: View {
                     Spacer().frame(height: 20)
                 }
             }
+            }
         }
         .background(palette.ground)
     }
+
+    private static let topAnchor = "providers-top"
 }
 
 /// The providers pane itself: connected accounts, then every addable type.
@@ -725,12 +751,20 @@ struct ProvidersConnectPane: View {
     let onOpenSettings: () -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
-            CliampHeader("providers", onBack: onBack, onSearch: onOpenSearch, onSettings: onOpenSettings) {
-                EmptyView()
-            }
+        ScrollViewReader { proxy in
+            VStack(spacing: 0) {
+                CliampHeader(
+                    "providers",
+                    onBack: onBack,
+                    onSearch: onOpenSearch,
+                    onSettings: onOpenSettings,
+                    onTitleTap: { proxy.scrollTo(Self.topAnchor, anchor: .top) }
+                ) {
+                    EmptyView()
+                }
             ScrollView {
                 LazyVStack(spacing: 0) {
+                    Color.clear.frame(height: 0).id(Self.topAnchor)
                     SectionLabel("connected — 0") {
                         EmptyView()
                     }
@@ -743,9 +777,12 @@ struct ProvidersConnectPane: View {
                     Spacer().frame(height: 20)
                 }
             }
+            }
         }
         .background(palette.ground)
     }
+
+    private static let topAnchor = "providers-connect-top"
 }
 /// The providers pane: the connected accounts. Provider protocols land with
 /// their own slice (DEC-05), so the honest empty state is all there is now —

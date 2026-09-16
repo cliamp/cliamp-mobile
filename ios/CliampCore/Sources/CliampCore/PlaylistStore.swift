@@ -98,10 +98,10 @@ public final class PlaylistStore: @unchecked Sendable {
         lock.withLock { Self.ordered(playlists) }
     }
 
-    /// Android's `ORDER BY position, name` with position 0 everywhere, which
-    /// is a case-insensitive name order in practice.
+    /// Android's `ORDER BY position, name` with position 0 everywhere.
+    /// SQLite's BINARY collation is case-sensitive, so uppercase sorts first.
     private static func ordered(_ list: [Playlist]) -> [Playlist] {
-        list.sorted { $0.name.lowercased() < $1.name.lowercased() }
+        list.sorted { $0.name < $1.name }
     }
 
     public func playlist(slug: String) -> Playlist? {

@@ -64,6 +64,9 @@ final class LibraryModel {
     private(set) var downloadSort: StationSort
     private(set) var scanned = false
     var favScope: FavScope = .all
+    /// Observable mirror of the persisted per-playlist sorts: the preference
+    /// store is not observable, so a chip tap must touch this map to redraw.
+    private(set) var playlistSorts: [String: StationSort]
     /// Invalidates a scan that finished after a newer refresh began.
     private var scanGeneration = 0
 
@@ -82,6 +85,7 @@ final class LibraryModel {
         self.preferences = preferences
         self.localSort = preferences.sort(for: LibraryPreferences.localSongs)
         self.downloadSort = preferences.sort(for: Self.downloadsSortKey)
+        self.playlistSorts = preferences.allSorts()
         self.playlists = self.store.all()
     }
 
@@ -114,6 +118,9 @@ final class LibraryModel {
         let found = await library.scan()
         guard token == scanGeneration else { return }
         await Task.detached(priority: .utility) { library.save(found) }.value
+        // The save suspends too: a newer refresh or deletion may have landed
+        // while it ran, and its result must win.
+        guard token == scanGeneration else { return }
         apply(found)
         loading = false
         scanned = true
@@ -219,10 +226,11 @@ final class LibraryModel {
     /// The playlist pane's own sort choice, keyed by slug like Android's
     /// `playlistSort(slug)`.
     func sort(forPlaylist slug: String) -> StationSort {
-        preferences.sort(for: slug)
+        playlistSorts[slug] ?? .title
     }
 
     func setSort(_ sort: StationSort, forPlaylist slug: String) {
+        playlistSorts[slug] = sort
         preferences.setSort(sort, for: slug)
     }
 

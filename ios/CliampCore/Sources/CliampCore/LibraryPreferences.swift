@@ -18,6 +18,11 @@ public struct LibraryPreferences: @unchecked Sendable {
         sorts()[slug] ?? .title
     }
 
+    /// Every stored choice, so a model can keep an observable copy.
+    public func allSorts() -> [String: StationSort] {
+        sorts()
+    }
+
     public func setSort(_ sort: StationSort, for slug: String) {
         var map = sorts()
         map[slug] = sort
