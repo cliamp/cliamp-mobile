@@ -62,9 +62,19 @@ struct MainShell: View {
                 tab = .library
                 libraryPath = [.providerWizard(nil)]
             }
-            if arguments.contains("-cliamp-preview-provider-browse"), let account = providers.accounts.first {
+            if arguments.contains("-cliamp-preview-provider-browse") {
+                // The preview account is seeded by RootView's task, which may
+                // land after this onAppear.
                 tab = .library
-                libraryPath = [.providerBrowse(account.id)]
+                Task { @MainActor in
+                    for _ in 0..<40 {
+                        if let account = providers.accounts.first {
+                            libraryPath = [.providerBrowse(account.id)]
+                            return
+                        }
+                        try? await Task.sleep(for: .milliseconds(250))
+                    }
+                }
             }
             if arguments.contains("-cliamp-preview-library-playlist") {
                 tab = .library
