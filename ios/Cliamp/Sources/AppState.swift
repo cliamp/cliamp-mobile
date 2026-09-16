@@ -19,8 +19,16 @@ final class AppState {
     var autoDownload: Bool { didSet { defaults.set(autoDownload, forKey: Keys.autoDownload) } }
 
     private(set) var favoriteURLs: Set<String> = []
+    /// Newest first; the full stations, not just URLs, so the cold-launch
+    /// fallback can navigate them.
+    private(set) var favorites: [Station] = []
+    /// Most recently played first, trimmed to the Android history limit.
+    private(set) var history: [Station] = []
+    /// What the mini player shows on a silent cold launch.
+    private(set) var lastStation: Station?
 
     private let defaults: UserDefaults
+    private let library: RadioLibrary
 
     private enum Keys {
         static let palette = "palette"
@@ -36,6 +44,7 @@ final class AppState {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        library = RadioLibrary(defaults: defaults)
         palettePreference = defaults.string(forKey: Keys.palette) ?? "system"
         haptics = defaults.object(forKey: Keys.haptics) as? Bool ?? true
         visualizer = defaults.string(forKey: Keys.visualizer) ?? "spectrum"
@@ -45,6 +54,10 @@ final class AppState {
         autoResume = defaults.bool(forKey: Keys.autoResume)
         resumeLocalSongs = defaults.bool(forKey: Keys.resumeLocal)
         autoDownload = defaults.bool(forKey: Keys.autoDownload)
+        favorites = library.favorites()
+        favoriteURLs = Set(favorites.map(\.url))
+        history = library.history()
+        lastStation = library.lastStation()
     }
 
     func isFavorite(_ station: Station) -> Bool {
@@ -52,10 +65,23 @@ final class AppState {
     }
 
     func toggleFavorite(_ station: Station) {
-        if favoriteURLs.contains(station.url) {
-            favoriteURLs.remove(station.url)
-        } else {
-            favoriteURLs.insert(station.url)
-        }
+        library.toggleFavorite(station)
+        favorites = library.favorites()
+        favoriteURLs = Set(favorites.map(\.url))
+    }
+
+    /// The one place a user-initiated play touches persistence, matching the
+    /// Android `persistAndRefresh` choke point: history and last station.
+    func recordPlay(_ station: Station) {
+        library.pushHistory(station)
+        library.setLastStation(station)
+        history = library.history()
+        lastStation = station
+    }
+
+    /// What prev/next walk before anything was played from a real list:
+    /// recent history, or favourites when history is empty.
+    var fallbackStations: [Station] {
+        history.isEmpty ? favorites : history
     }
 }

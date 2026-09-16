@@ -33,6 +33,17 @@ struct RootView: View {
                 .environment(\.cliampHapticsEnabled, app.haptics)
         }
         .task {
+            player.onRecordPlay = { [app] station in app.recordPlay(station) }
+            // Android restores the last station to the bus but never plays it
+            // unless auto-resume is on: a radio app that starts making noise
+            // on launch is a bad neighbour (RAD-12).
+            if let last = app.lastStation {
+                if app.autoResume {
+                    player.play(last)
+                } else {
+                    player.restore(last)
+                }
+            }
             #if DEBUG
             // Preview hooks for screenshots and UI tests; never compiled into
             // release builds.

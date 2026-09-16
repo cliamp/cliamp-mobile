@@ -31,6 +31,10 @@ final class RadioPlayer {
     private(set) var error: String?
     private(set) var elapsedMs: Int64 = 0
 
+    /// Called on every user-initiated play so history and the last station
+    /// reach persistence at one choke point (RAD-12).
+    var onRecordPlay: ((Station) -> Void)?
+
     init() {
         timeControlObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
             let status = player.timeControlStatus
@@ -53,6 +57,7 @@ final class RadioPlayer {
             error = "couldn't play that stream"
             return
         }
+        onRecordPlay?(station)
         let item = AVPlayerItem(url: url)
         // A post-effects tap gives the meters the PCM that is actually
         // playing, for the real FFT. If the tap cannot attach, the meter
@@ -91,6 +96,14 @@ final class RadioPlayer {
                 self?.streamTitle = title
             }
         }
+    }
+
+    /// Shows the last station without making a sound, matching the Android
+    /// service restoring `last_station` for the mini player while auto-resume
+    /// is off. A station already on screen wins.
+    func restore(_ station: Station) {
+        guard self.station == nil else { return }
+        self.station = station
     }
 
     func toggle() {
