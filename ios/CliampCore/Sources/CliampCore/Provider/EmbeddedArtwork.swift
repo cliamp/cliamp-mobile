@@ -30,7 +30,7 @@ public enum EmbeddedArtwork {
         private var bytes = 0
 
         func canRead(_ length: Int) -> Bool {
-            reads < maxReads && bytes < maxScanBytes && length >= 0
+            reads < maxReads && length >= 0 && length <= maxScanBytes - bytes
         }
 
         func spend(_ length: Int) {
@@ -89,82 +89,95 @@ public enum EmbeddedArtwork {
         let flags = header[5]
         let tagEnd = Int64(10 + min(tagSize, maxScanBytes))
 
-        // Extended header: v2.3's size excludes its own four bytes, v2.4's
-        // includes the whole extended header.
+        // Extended header: v2.3's size excludes its own four bytes; v2.4's is
+        // syncsafe and includes the whole extended header.
         var framesStart: Int64 = 10
         if flags & 0x40 != 0 {
             guard let ext = try await bytes(reader, offset: 10, length: 6, budget: budget),
-                  ext.count == 6, let extSize = plainU32(ext, 0)
+                  ext.count == 6
             else { return nil }
-            framesStart = major == 4
-                ? 10 + Int64(min(Int(extSize), maxScanBytes))
-                : 10 + 4 + Int64(min(Int(extSize), maxScanBytes))
+            let declared: Int?
+            if major == 4 {
+                declared = syncSafe(ext, 0)
+            } else {
+                declared = plainU32(ext, 0).map(Int.init)
+            }
+            guard let declared, declared >= 0, declared <= maxScanBytes else { return nil }
+            framesStart = major == 4 ? 10 + Int64(declared) : 10 + 4 + Int64(declared)
         }
-        let unsynchronised = flags & 0x80 != 0
-        return try await id3Pictures(
-            reader, major: major, start: framesStart, tagEnd: tagEnd,
-            unsynchronised: unsynchronised, budget: budget
-        )
+        guard framesStart < tagEnd else { return nil }
+
+        // The whole tag body is read once (in bounded chunks) and, for v2.3,
+        // unsynchronised before parsing: frame sizes describe the decoded
+        // bytes, so walking the on-disk stream would misalign after any 0xFF.
+        var body = Data()
+        var cursor = framesStart
+        let chunk = 256 * 1024
+        while cursor < tagEnd {
+            let want = Int(min(Int64(chunk), tagEnd - cursor))
+            guard let part = try await bytes(reader, offset: cursor, length: want, budget: budget),
+                  !part.isEmpty
+            else { break }
+            body.append(part)
+            cursor += Int64(part.count)
+        }
+        if flags & 0x80 != 0 {
+            body = deunsynchronised(body)
+        }
+        return id3Pictures(in: body, major: major)
     }
 
-    /// Walks frames until the tag ends or the budget runs out, collecting
-    /// usable pictures. An unsupported or oversized picture does not stop the
-    /// walk: a later APIC can still be the real cover.
-    private static func id3Pictures(
-        _ reader: ByteRangeReader,
-        major: Int,
-        start: Int64,
-        tagEnd: Int64,
-        unsynchronised: Bool,
-        budget: Budget
-    ) async throws -> Data? {
-        var cursor = start
+    /// Frame walk over the decoded tag body. An unsupported or oversized
+    /// picture does not stop the search: a later APIC can still be the cover.
+    private static func id3Pictures(in body: Data, major: Int) -> Data? {
+        var cursor = 0
         var candidates = 0
-        while cursor + 10 <= tagEnd {
-            guard let frame = try await bytes(reader, offset: cursor, length: 10, budget: budget),
-                  frame.count == 10
-            else { return nil }
-            let identifier = String(decoding: frame[0..<4], as: UTF8.self)
+        while cursor + 10 <= body.count {
+            let identifier = String(decoding: body[cursor..<(cursor + 4)], as: UTF8.self)
             guard identifier.allSatisfy({ $0.isLetter || $0.isNumber }) else { return nil }
-            let size: Int? = major == 4 ? syncSafe(frame, 4) : plainU32(frame, 4).map(Int.init)
+            let raw = body[(cursor + 4)..<(cursor + 8)]
+            let size: Int?
+            if major == 4 {
+                size = syncSafe(Data(raw), 0)
+            } else {
+                size = raw.reduce(0) { ($0 << 8) | Int($1) }
+            }
             guard let frameSize = size, frameSize > 0 else { return nil }
-            let frameFlags = (Int(frame[8]) << 8) | Int(frame[9])
             var payloadStart = cursor + 10
             var payloadLength = frameSize
+            let frameFlags = (Int(body[cursor + 8]) << 8) | Int(body[cursor + 9])
 
             if major == 4 {
-                // Data-length indicator, then unsynchronisation.
-                if frameFlags & 0x01 != 0 {
+                if frameFlags & 0x01 != 0 { // data length indicator
                     payloadStart += 4
                     payloadLength = max(0, payloadLength - 4)
                 }
             } else {
                 // Compression and encryption are unsupported: skip the frame.
                 if frameFlags & 0xC0 != 0 {
-                    cursor = payloadStart + Int64(frameSize)
+                    cursor = payloadStart + frameSize
                     continue
                 }
-                if frameFlags & 0x20 != 0 { payloadStart += 1 }
+                if frameFlags & 0x20 != 0 { // grouping identity
+                    payloadStart += 1
+                    payloadLength = max(0, payloadLength - 1)
+                }
             }
-            // The declared payload must live inside the tag and the scan cap.
-            guard payloadStart >= cursor + 10,
-                  payloadStart + Int64(payloadLength) <= tagEnd
+            guard payloadStart >= 0,
+                  payloadLength >= 0,
+                  payloadStart + payloadLength <= body.count
             else { return nil }
 
             if identifier == "APIC", payloadLength <= maxImageBytes + 1024 {
                 candidates += 1
-                if let payload = try await bytes(
-                    reader, offset: payloadStart, length: payloadLength, budget: budget
-                ) {
-                    var data = payload
-                    if unsynchronised || (major == 4 && frameFlags & 0x02 != 0) {
-                        data = deunsynchronised(data)
-                    }
-                    if let image = imageFromAPIC(data) { return image }
+                var payload = body[payloadStart..<(payloadStart + payloadLength)]
+                if major == 4, frameFlags & 0x02 != 0 {
+                    payload = deunsynchronised(Data(payload))[...]
                 }
+                if let image = imageFromAPIC(Data(payload)) { return image }
                 if candidates >= 8 { return nil }
             }
-            cursor = payloadStart + Int64(payloadLength)
+            cursor = payloadStart + payloadLength
         }
         return nil
     }

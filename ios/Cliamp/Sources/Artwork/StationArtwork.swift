@@ -17,31 +17,52 @@ import UIKit
 /// a week so a relaunch does not re-fetch. Downloads are capped and decodes are
 /// scaled through ImageIO, so a fast-scrolled list never holds full-size images.
 /// A tiny counting semaphore for bounding concurrent artwork extraction.
+/// Waiting is cancellation-aware, so a scrolled-away row stops queueing work.
 actor AsyncSlots {
     private let limit: Int
     private var used = 0
-    private var waiters: [CheckedContinuation<Void, Never>] = []
 
     init(limit: Int) {
         self.limit = limit
     }
 
-    func acquire() async {
-        if used < limit {
-            used += 1
-            return
-        }
-        await withCheckedContinuation { continuation in
-            waiters.append(continuation)
+    func acquire() async throws {
+        while true {
+            if used < limit {
+                used += 1
+                return
+            }
+            try Task.checkCancellation()
+            try await Task.sleep(for: .milliseconds(10))
         }
     }
 
     func release() {
-        if waiters.isEmpty {
-            used = max(0, used - 1)
-        } else {
-            waiters.removeFirst().resume()
-        }
+        used = max(0, used - 1)
+    }
+}
+
+/// One in-flight extraction, shared by every caller that asks for the same
+/// station while it runs. The last caller to leave cancels the work.
+private final class Extraction: @unchecked Sendable {
+    let id = UUID()
+    var task: Task<Data?, Never>!
+    private let lock = NSLock()
+    private var waiters = 0
+
+    func join() {
+        lock.lock()
+        waiters += 1
+        lock.unlock()
+    }
+
+    /// True when no interested caller remains.
+    func leave() -> Bool {
+        lock.lock()
+        waiters -= 1
+        let last = waiters <= 0
+        lock.unlock()
+        return last
     }
 }
 
@@ -73,17 +94,24 @@ final class StationArtwork: @unchecked Sendable {
 
     /// One extraction per station, shared by every row/player that asks while
     /// it runs, and a small concurrency bound so a fast scroll cannot open a
-    /// burst of SFTP reads.
-    private let extractions = Mutex<[String: Task<Data?, Never>]>([:])
+    /// burst of SFTP reads. Completed entries are dropped: the image caches
+    /// hold the decoded picture, and the raw bytes must not pile up.
+    private let extractions = Mutex<[String: Extraction]>([:])
     private let extractionSlots = AsyncSlots(limit: 3)
 
     private func embeddedData(for station: Station) async -> Data? {
         guard let provider = embeddedArtwork else { return nil }
-        let task = extractions.withLock { tasks -> Task<Data?, Never> in
+        let entry = extractions.withLock { tasks -> Extraction in
             if let existing = tasks[station.id] { return existing }
-            let created = Task { () -> Data? in
-                await extractionSlots.acquire()
+            let created = Extraction()
+            created.task = Task { () -> Data? in
+                do {
+                    try await extractionSlots.acquire()
+                } catch {
+                    return nil
+                }
                 defer { Task { await extractionSlots.release() } }
+                guard !Task.isCancelled else { return nil }
                 do {
                     return try await provider(station)
                 } catch {
@@ -93,12 +121,25 @@ final class StationArtwork: @unchecked Sendable {
             tasks[station.id] = created
             return created
         }
-        let data = await task.value
-        if data == nil {
-            // Let a later request retry (the miss memo paces it out).
-            extractions.withLock { $0[station.id] = nil }
+        entry.join()
+        defer {
+            if entry.leave() {
+                // Nobody is waiting: stop the work and drop the entry.
+                entry.task.cancel()
+                drop(entry, for: station.id)
+            }
         }
+        let data = await entry.task.value
+        drop(entry, for: station.id)
         return data
+    }
+
+    /// Removes an entry only if it is still the current one, so an older
+    /// completion cannot clear a replacement.
+    private func drop(_ entry: Extraction, for key: String) {
+        extractions.withLock { tasks in
+            if tasks[key]?.id == entry.id { tasks[key] = nil }
+        }
     }
 
     private let images = NSCache<NSString, UIImage>()

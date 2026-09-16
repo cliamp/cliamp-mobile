@@ -155,8 +155,8 @@ private func id3ExtendedHeaderFixture(image: Data) -> Data {
     return header + tag
 }
 
-/// A tag whose APIC payload was unsynchronised (00 inserted after FF). The
-/// frame size describes what is on disk, exactly as a real encoder writes it.
+/// A v2.3 tag assembled with the decoded frame size and then unsynchronised
+/// as a whole, exactly as the v2.3 spec describes.
 private func id3UnsynchronisedFixture(image: Data) -> Data {
     var payload = Data([0]) // latin1
     payload.append(contentsOf: Array("image/jpeg".utf8))
@@ -164,16 +164,46 @@ private func id3UnsynchronisedFixture(image: Data) -> Data {
     payload.append(3)
     payload.append(0) // empty description
     payload.append(image)
+    var frame = Data([UInt8(ascii: "A"), UInt8(ascii: "P"), UInt8(ascii: "I"), UInt8(ascii: "C")])
+    frame.append(be32(payload.count)) // decoded size, before unsynchronisation
+    frame.append(contentsOf: [0, 0])
+    frame.append(payload)
     var unsynchronised = Data()
-    for byte in payload {
+    for byte in frame {
         unsynchronised.append(byte)
         if byte == 0xFF { unsynchronised.append(0) }
     }
-    var frame = Data([UInt8(ascii: "A"), UInt8(ascii: "P"), UInt8(ascii: "I"), UInt8(ascii: "C")])
-    frame.append(be32(unsynchronised.count))
-    frame.append(contentsOf: [0, 0])
-    frame.append(unsynchronised)
     var header = Data([UInt8(ascii: "I"), UInt8(ascii: "D"), UInt8(ascii: "3"), 3, 0, 0x80])
+    header.append(syncSafe(unsynchronised.count))
+    return header + unsynchronised
+}
+
+/// A v2.4 tag with a syncsafe extended header (size includes itself).
+private func id3v24ExtendedHeaderFixture(image: Data) -> Data {
+    let apic = id3Fixture(image: image, version: 4).dropFirst(10)
+    let extended = syncSafe(12) + Data(count: 8) // size includes these 4 bytes
+    var tag = Data(extended)
+    tag.append(apic)
+    var header = Data([UInt8(ascii: "I"), UInt8(ascii: "D"), UInt8(ascii: "3"), 4, 0, 0x40])
+    header.append(syncSafe(tag.count))
+    return header + tag
+}
+
+/// A v2.3 APIC frame with the grouping-identity flag, whose extra byte must
+/// not leak into the image.
+private func id3GroupedFrameFixture(image: Data) -> Data {
+    var payload = Data([0]) // latin1
+    payload.append(contentsOf: Array("image/png".utf8))
+    payload.append(0)
+    payload.append(3)
+    payload.append(0)
+    payload.append(image)
+    var frame = Data([UInt8(ascii: "A"), UInt8(ascii: "P"), UInt8(ascii: "I"), UInt8(ascii: "C")])
+    frame.append(be32(payload.count + 1))
+    frame.append(contentsOf: [0, 0x20]) // grouping identity
+    frame.append(0x7F) // group byte
+    frame.append(payload)
+    var header = Data([UInt8(ascii: "I"), UInt8(ascii: "D"), UInt8(ascii: "3"), 3, 0, 0])
     header.append(syncSafe(frame.count))
     return header + frame
 }
@@ -289,6 +319,22 @@ struct EmbeddedArtworkTests {
             from: BlobReader(id3UnsynchronisedFixture(image: jpeg)), fileExtension: "mp3"
         )
         #expect(image == jpeg)
+    }
+
+    @Test("a v2.4 extended header is syncsafe and does not hide the cover")
+    func extendedHeaderV24() async throws {
+        let image = try await EmbeddedArtwork.extract(
+            from: BlobReader(id3v24ExtendedHeaderFixture(image: pngBytes)), fileExtension: "mp3"
+        )
+        #expect(image == pngBytes)
+    }
+
+    @Test("a grouped v2.3 frame keeps its group byte out of the image")
+    func groupedFrame() async throws {
+        let image = try await EmbeddedArtwork.extract(
+            from: BlobReader(id3GroupedFrameFixture(image: pngBytes)), fileExtension: "mp3"
+        )
+        #expect(image == pngBytes)
     }
 
     @Test("an unusable first picture does not hide a later one")

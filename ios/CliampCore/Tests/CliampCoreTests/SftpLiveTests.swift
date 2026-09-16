@@ -111,13 +111,17 @@ struct SftpLiveTests {
     }
 
     /// The first file reachable from the root, so the tests work against any
-    /// server layout (the fixture and the Docker library differ).
+    /// server layout (the fixture is flat-ish, the Docker library is
+    /// Artist/Album/track). Breadth-first with hard bounds.
     private func firstFile(_ session: SshSession, at root: String) async throws -> String? {
-        let top = try await session.list(root)
-        if let file = top.first(where: { $0.kind == .file }) { return file.path }
-        for directory in top.filter({ $0.kind == .directory }).prefix(3) {
-            let inner = try await session.list(directory.path)
-            if let file = inner.first(where: { $0.kind == .file }) { return file.path }
+        var queue = [root]
+        var visited = 0
+        while let directory = queue.first, visited < 12 {
+            queue.removeFirst()
+            visited += 1
+            let entries = (try? await session.list(directory)) ?? []
+            if let file = entries.first(where: { $0.kind == .file }) { return file.path }
+            queue.append(contentsOf: entries.filter { $0.kind == .directory }.map(\.path))
         }
         return nil
     }
