@@ -108,9 +108,14 @@ final class StationArtwork: @unchecked Sendable {
         guard let provider = embeddedArtwork else { return nil }
         // The cache check and the entry claim share one lock: a caller cannot
         // slip between another extraction's publish and its entry removal.
+        // Lookup, join and creation all happen under one lock: a caller can
+        // never pick up an entry that the last leaver is about to cancel.
         let outcome = extractions.withLock { tasks -> ExtractionOutcome in
-            if let existing = tasks[station.id] { return .flight(existing) }
-            if let cached = try? Data(contentsOf: fileURL(station.id)), !cached.isEmpty {
+            if let existing = tasks[station.id] {
+                existing.join()
+                return .flight(existing)
+            }
+            if let cached = validExtractedData(station.id) {
                 return .cached(cached)
             }
             let created = Extraction()
@@ -128,6 +133,7 @@ final class StationArtwork: @unchecked Sendable {
                     return nil
                 }
             }
+            created.join()
             tasks[station.id] = created
             return .flight(created)
         }
@@ -136,21 +142,17 @@ final class StationArtwork: @unchecked Sendable {
         case .cached(let data):
             return data
         case .flight(let entry):
-            entry.join()
             // One waiter-removal exactly, whether this caller finishes or its
-            // task is cancelled; cancelling the last waiter stops the work.
+            // task is cancelled; removing the last waiter stops the work.
             let once = Once()
             let data = await withTaskCancellationHandler {
                 await entry.task.value
             } onCancel: {
                 if once.claim() {
-                    if entry.leave() {
-                        entry.task.cancel()
-                        self.drop(entry, for: station.id)
-                    }
+                    self.leave(entry, for: station.id)
                 }
             }
-            // Publish the reusable result before dropping the entry: a caller
+            // Publish the reusable result before removing the entry: a caller
             // that arrives in between must find the cache, not start over.
             if let data {
                 try? data.write(to: fileURL(station.id), options: .atomic)
@@ -159,12 +161,9 @@ final class StationArtwork: @unchecked Sendable {
                 }
                 clearMiss(station.id)
             }
-            if once.claim(), entry.leave() {
-                // The last interested caller is gone; stop any work still
-                // running for an entry nobody will use.
-                entry.task.cancel()
+            if once.claim() {
+                leave(entry, for: station.id)
             }
-            drop(entry, for: station.id)
             return data
         }
     }
@@ -183,12 +182,31 @@ final class StationArtwork: @unchecked Sendable {
         }
     }
 
-    /// Removes an entry only if it is still the current one, so an older
-    /// completion cannot clear a replacement.
-    private func drop(_ entry: Extraction, for key: String) {
-        extractions.withLock { tasks in
+    /// Drops one waiter; when the last one leaves, the entry is removed under
+    /// the same lock so a new caller cannot join a cancelled task.
+    private func leave(_ entry: Extraction, for key: String) {
+        let cancel = extractions.withLock { tasks -> Bool in
+            guard entry.leave() else { return false }
             if tasks[key]?.id == entry.id { tasks[key] = nil }
+            return true
         }
+        if cancel {
+            entry.task.cancel()
+        }
+    }
+
+    /// Cached extracted bytes, held to the same freshness and decode rules as
+    /// the HTTP cache: an expired or undecodable file is fetched again.
+    private func validExtractedData(_ key: String) -> Data? {
+        let url = fileURL(key)
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let modified = attributes[.modificationDate] as? Date,
+              Date().timeIntervalSince(modified) < Self.diskTTL,
+              let data = try? Data(contentsOf: url),
+              !data.isEmpty,
+              Self.scaledImage(data: data, target: Self.targetSmall) != nil
+        else { return nil }
+        return data
     }
 
     private let images = NSCache<NSString, UIImage>()
