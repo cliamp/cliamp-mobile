@@ -100,6 +100,10 @@ public struct SftpScan: Sendable {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
+                // A fatal failure (auth, transport) ends the scan even when an
+                // earlier root succeeded; only a recoverable root failure is
+                // remembered for the "nothing found" report.
+                if !Self.isRecoverable(error) { throw error }
                 lastError = error
             }
         }

@@ -336,6 +336,18 @@ struct SftpScanTests {
         }
     }
 
+    @Test("a fatal failure on a later root still fails the whole scan")
+    func fatalAfterSuccess() async {
+        let tree = FakeTree(entries: [
+            "/good": [file("/good/a.mp3")],
+            "/bad": [file("/bad/b.mp3")],
+        ])
+        tree.failures["/bad"] = SshError.refusedCredentials
+        await #expect(throws: SshError.self) {
+            try await collect(SftpScan(folders: ["/good", "/bad"], onBatch: { _ in }), tree)
+        }
+    }
+
     @Test("cancellation propagates out of the walk")
     func cancellationPropagates() async {
         let tree = FakeTree(entries: ["/m": [file("/m/a.mp3")]])

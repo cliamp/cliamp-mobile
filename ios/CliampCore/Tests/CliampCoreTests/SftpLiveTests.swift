@@ -100,6 +100,23 @@ struct SftpLiveTests {
         }
     }
 
+    @Test("a missing directory is classified recoverable, not fatal")
+    func missingDirectory() async throws {
+        let session = SshSession(config: sshConfig(values()))
+        defer { Task { await session.close() } }
+        do {
+            _ = try await session.list("\(Self.root)/no-such-folder")
+            Issue.record("expected the missing directory to fail")
+        } catch let error as SshError {
+            guard case .directoryUnreadable = error else {
+                Issue.record("wrong error: \(error)")
+                return
+            }
+        } catch {
+            Issue.record("wrong error type: \(error)")
+        }
+    }
+
     @Test("scan finds the tree's tracks and reads a byte range")
     func scanAndRead() async throws {
         let session = SshSession(config: sshConfig(values()))

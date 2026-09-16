@@ -108,22 +108,36 @@ private final class AccountAuthentication: NIOSSHClientUserAuthenticationDelegat
     }
 }
 
-/// A connected transport plus the event loop group its channels run on. The
-/// group is owned here because Citadel's connect helper leaks the channel when
-/// a handshake fails; shutting the group down closes whatever it left behind.
+/// A connected transport plus the event loop group its channels run on.
+///
+/// Two SFTP channels ride one SSH connection: playback reads never get their
+/// channel closed under them, while the listing channel is recycled to reclaim
+/// the directory handles the SFTP client leaks (it never sends CLOSE for
+/// OPENDIR). The group is owned here because Citadel's connect helper leaks
+/// the socket when a handshake fails; shutting the group down closes it.
 private final class SshTransport: @unchecked Sendable {
     let group: MultiThreadedEventLoopGroup
     let client: SSHClient
-    let sftp: SFTPClient
+    var readSftp: SFTPClient
+    var listSftp: SFTPClient
+    var listingsSinceRecycle = 0
+    var listingsInFlight = 0
 
-    init(group: MultiThreadedEventLoopGroup, client: SSHClient, sftp: SFTPClient) {
+    init(
+        group: MultiThreadedEventLoopGroup,
+        client: SSHClient,
+        readSftp: SFTPClient,
+        listSftp: SFTPClient
+    ) {
         self.group = group
         self.client = client
-        self.sftp = sftp
+        self.readSftp = readSftp
+        self.listSftp = listSftp
     }
 
     func shutdown() async {
-        try? await sftp.close()
+        try? await listSftp.close()
+        try? await readSftp.close()
         try? await client.close()
         try? await group.shutdownGracefully()
     }
@@ -155,11 +169,14 @@ public actor SshSession: RemoteFileTree {
 
     // MARK: connecting
 
-    private func channel() async throws -> SFTPClient {
-        if let transport { return transport.sftp }
+    /// The transport, connecting if needed. `read` operations take the read
+    /// channel; listing takes the recycled one.
+    private func channel() async throws -> SshTransport {
+        if let transport { return transport }
         if let connecting {
             let established = try await connecting.value
-            return try await publish(established, generation: generation)
+            _ = try await publish(established, generation: generation)
+            return established
         }
         let config = self.config
         let validator = PinnedHostKey(expected: config.fingerprint)
@@ -170,11 +187,11 @@ public actor SshSession: RemoteFileTree {
         connecting = task
         do {
             let established = try await task.value
-            let sftp = try await publish(established, generation: generation)
+            _ = try await publish(established, generation: generation)
             fingerprint = config.fingerprint.isEmpty
                 ? validator.learnedFingerprint
                 : config.fingerprint
-            return sftp
+            return established
         } catch {
             connecting = nil
             if let error = error as? SshError { throw error }
@@ -184,14 +201,14 @@ public actor SshSession: RemoteFileTree {
 
     /// Takes ownership of a freshly established connection, or shuts it down
     /// when the session was closed (or replaced) while it was connecting.
-    private func publish(_ established: SshTransport, generation establishedGeneration: Int) async throws -> SFTPClient {
+    private func publish(_ established: SshTransport, generation establishedGeneration: Int) async throws -> SshTransport {
         guard establishedGeneration == generation, !Task.isCancelled else {
             await established.shutdown()
             throw CancellationError()
         }
         transport = established
         connecting = nil
-        return established.sftp
+        return established
     }
 
     private static func connect(config: SshConfig, validator: PinnedHostKey) async throws -> SshTransport {
@@ -211,9 +228,12 @@ public actor SshSession: RemoteFileTree {
         do {
             let client = try await SSHClient.connect(to: settings)
             try Task.checkCancellation()
-            let sftp = try await client.openSFTP()
+            let readSftp = try await client.openSFTP()
+            let listSftp = try await client.openSFTP()
             try Task.checkCancellation()
-            return SshTransport(group: group, client: client, sftp: sftp)
+            return SshTransport(
+                group: group, client: client, readSftp: readSftp, listSftp: listSftp
+            )
         } catch let error as SshError {
             try? await group.shutdownGracefully()
             throw error
@@ -231,15 +251,18 @@ public actor SshSession: RemoteFileTree {
 
     /// Recycles the SFTP channel every so many listings, reclaiming the
     /// directory handles the dependency leaks.
-    private func recycleIfNeeded() async {
-        guard listingsSinceRecycle >= 200, let transport else { return }
-        listingsSinceRecycle = 0
-        try? await transport.sftp.close()
+    /// Replaces the listing channel once it has served enough listings,
+    /// reclaiming every leaked directory handle at once. Only runs with no
+    /// listing in flight; reads live on their own channel, so playback never
+    /// sees a closed channel.
+    private func recycleListingsIfNeeded(_ transport: SshTransport) async {
+        guard transport.listingsSinceRecycle >= 200, transport.listingsInFlight == 0 else {
+            return
+        }
+        transport.listingsSinceRecycle = 0
+        try? await transport.listSftp.close()
         do {
-            let fresh = try await transport.client.openSFTP()
-            self.transport = SshTransport(
-                group: transport.group, client: transport.client, sftp: fresh
-            )
+            transport.listSftp = try await transport.client.openSFTP()
         } catch {
             // A channel that cannot be reopened is worse than a stale one:
             // drop the whole connection so the next call reconnects.
@@ -306,20 +329,24 @@ public actor SshSession: RemoteFileTree {
     // MARK: RemoteFileTree
 
     public func canonicalize(_ path: String) async throws -> String {
-        let sftp = try await channel()
+        let transport = try await channel()
         do {
-            return try await sftp.getRealPath(atPath: path)
+            return try await transport.readSftp.getRealPath(atPath: path)
         } catch {
             throw Self.failure(error)
         }
     }
 
     public func list(_ path: String) async throws -> [RemoteEntry] {
-        let sftp = try await channel()
-        defer { listingsSinceRecycle += 1 }
+        let transport = try await channel()
+        transport.listingsInFlight += 1
+        defer {
+            transport.listingsInFlight -= 1
+            transport.listingsSinceRecycle += 1
+        }
         do {
-            let names = try await sftp.listDirectory(atPath: path)
-            await recycleIfNeeded()
+            let names = try await transport.listSftp.listDirectory(atPath: path)
+            await recycleListingsIfNeeded(transport)
             var entries: [RemoteEntry] = []
             // One NAME response can hold several entries (asyncssh batches
             // them), so every component counts, not just the message's last.
@@ -338,19 +365,22 @@ public actor SshSession: RemoteFileTree {
             return entries
         } catch {
             if error is CancellationError { throw CancellationError() }
-            // A refused or vanished directory is a per-directory problem the
-            // scan skips; anything else (transport, auth) must propagate.
-            if error is SFTPError {
-                throw SshError.directoryUnreadable("cannot list \(path)")
+            // A refused or vanished directory arrives as a STATUS response to
+            // our request: a per-directory problem the scan skips. Everything
+            // else (connection closed, protocol errors) must propagate.
+            if let status = error as? SFTPMessage.Status {
+                throw SshError.directoryUnreadable(
+                    status.message.isEmpty ? "cannot list \(path)" : status.message
+                )
             }
             throw Self.failure(error)
         }
     }
 
     public func stat(_ path: String) async throws -> RemoteEntry? {
-        let sftp = try await channel()
+        let transport = try await channel()
         do {
-            let attributes = try await sftp.getAttributes(at: path)
+            let attributes = try await transport.readSftp.getAttributes(at: path)
             // `stat` already has the full path: it must not be joined again.
             let modified = attributes.accessModificationTime?.modificationTime
                 .timeIntervalSince1970 ?? 0
@@ -369,9 +399,9 @@ public actor SshSession: RemoteFileTree {
     /// Reads one range, chunked to the 32 KiB SFTP servers actually honour.
     /// The player asks for larger ranges than a single READ allows.
     public func read(_ path: String, offset: UInt64, length: UInt32) async throws -> Data {
-        let sftp = try await channel()
+        let transport = try await channel()
         do {
-            return try await sftp.withFile(filePath: path, flags: [.read]) { file in
+            return try await transport.readSftp.withFile(filePath: path, flags: [.read]) { file in
                 var data = Data()
                 var position = offset
                 var remaining = Int64(length)
