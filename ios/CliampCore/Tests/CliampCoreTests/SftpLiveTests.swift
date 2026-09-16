@@ -8,19 +8,25 @@ import Testing
 /// `sftp-server.py` (asyncssh) serving a small music tree on port 2222.
 @Suite("sftp live", .enabled(if: ProcessInfo.processInfo.environment["CLIAMP_SFTP_LIVE"] == "1"))
 struct SftpLiveTests {
-    private static let root = ProcessInfo.processInfo.environment["CLIAMP_SFTP_ROOT"]
-        ?? "/tmp/cliamp-sftp/music"
+    private static func env(_ key: String, _ fallback: String) -> String {
+        ProcessInfo.processInfo.environment[key] ?? fallback
+    }
+
+    private static let root = env("CLIAMP_SFTP_ROOT", "/tmp/cliamp-sftp/music")
     private static let expectedFingerprint = ProcessInfo.processInfo
         .environment["CLIAMP_SFTP_FINGERPRINT"]
+    private static let port = env("CLIAMP_SFTP_PORT", "2222")
+    private static let user = env("CLIAMP_SFTP_USER", "tester")
+    private static let defaultPassword = env("CLIAMP_SFTP_PASSWORD", "testpass")
 
-    private func values(host: String = "127.0.0.1", password: String = "testpass",
+    private func values(host: String = "127.0.0.1", password: String? = nil,
                         folders: String? = nil, fingerprint: String = "") -> [String: String] {
         var values: [String: String] = [
             "host": host,
-            "port": "2222",
-            "user": "tester",
+            "port": Self.port,
+            "user": Self.user,
             "_auth": "password",
-            "password": password,
+            "password": password ?? Self.defaultPassword,
             "folders": folders ?? Self.root,
         ]
         if !fingerprint.isEmpty { values["fingerprint"] = fingerprint }

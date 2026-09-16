@@ -1,0 +1,310 @@
+import Foundation
+
+/// Random-access bytes, so one tag parser works for a local file and a remote
+/// SFTP track alike.
+public protocol ByteRangeReader: Sendable {
+    func readRange(offset: Int64, length: Int) async throws -> Data
+    func fileSize() async throws -> Int64
+}
+
+/// Embedded cover art out of the file itself: ID3v2 `APIC` (MP3), the MP4
+/// `covr` atom (M4A/M4B/MP4) and FLAC's `PICTURE` metadata block. This is the
+/// Android `LocalArt` behaviour, except the same parser also serves provider
+/// tracks by reading ranges over SFTP.
+public enum EmbeddedArtwork {
+    /// Covers larger than this are ignored rather than shipped to a row.
+    public static let maxImageBytes = 2 * 1024 * 1024
+    /// Nothing beyond this is read while hunting for a cover: a lying header
+    /// costs one capped read, not an unbounded one.
+    public static let maxScanBytes = 4 * 1024 * 1024
+
+    /// Reads are normalized to zero-based Data: a range request may return a
+    /// slice whose indices start at the offset, and the parser indexes from 0.
+    private static func bytes(
+        _ reader: ByteRangeReader, offset: Int64, length: Int
+    ) async -> Data? {
+        guard let raw = try? await reader.readRange(offset: offset, length: length) else {
+            return nil
+        }
+        return raw.startIndex == 0 ? raw : Data(raw)
+    }
+
+    public static func extract(from reader: ByteRangeReader, fileExtension: String) async -> Data? {
+        switch fileExtension.lowercased() {
+        case "mp3":
+            return await fromID3(reader)
+        case "m4a", "m4b", "mp4", "aac":
+            return await fromMP4(reader)
+        case "flac":
+            return await fromFLAC(reader)
+        default:
+            return nil
+        }
+    }
+
+    // MARK: ID3v2 (mp3)
+
+    private static func fromID3(_ reader: ByteRangeReader) async -> Data? {
+        guard let header = await bytes(reader, offset: 0, length: 10),
+              header.count == 10, header.starts(with: Array("ID3".utf8))
+        else { return nil }
+        let major = Int(header[3])
+        guard major == 3 || major == 4, let tagSize = syncSafe(header, 6) else { return nil }
+        let tagEnd = 10 + min(tagSize, maxScanBytes)
+        var cursor: Int64 = 10
+        while cursor + 10 <= Int64(tagEnd) {
+            guard let frame = await bytes(reader, offset: cursor, length: 10),
+                  frame.count == 10
+            else { return nil }
+            let identifier = String(decoding: frame[0..<4], as: UTF8.self)
+            guard identifier.allSatisfy({ $0.isLetter || $0.isNumber }) else { return nil }
+            let size: Int? = major == 4 ? syncSafe(frame, 4) : plainU32(frame, 4).map(Int.init)
+            guard let frameSize = size, frameSize > 0 else { return nil }
+            let payloadStart = cursor + 10
+            if identifier == "APIC" {
+                guard frameSize <= maxImageBytes + 1024 else { return nil }
+                guard let payload = await bytes(reader, offset: payloadStart, length: frameSize),
+                      payload.count == frameSize
+                else { return nil }
+                return imageFromAPIC(payload)
+            }
+            cursor = payloadStart + Int64(frameSize)
+        }
+        return nil
+    }
+
+    /// `APIC`: encoding byte, null-terminated mime, picture type, a
+    /// null-terminated description in that encoding, then the image bytes.
+    private static func imageFromAPIC(_ payload: Data) -> Data? {
+        var index = 1 // encoding byte
+        guard let mimeEnd = payload[index...].firstIndex(of: 0) else { return nil }
+        let mime = String(decoding: payload[index..<mimeEnd], as: UTF8.self).lowercased()
+        index = mimeEnd + 1
+        guard index < payload.count else { return nil }
+        index += 1 // picture type
+        if payload[0] == 1 || payload[0] == 2 {
+            // UTF-16 description: a sequence of two-byte units whose
+            // terminator is one zero unit. Scanning byte-by-byte would stop
+            // inside a character's trailing NUL (`72 00 00 00`) and leave a
+            // stray byte in front of the image.
+            var terminated = false
+            while index + 1 < payload.count {
+                if payload[index] == 0 && payload[index + 1] == 0 {
+                    index += 2
+                    terminated = true
+                    break
+                }
+                index += 2
+            }
+            guard terminated else { return nil }
+        } else {
+            while index < payload.count, payload[index] != 0 { index += 1 }
+            index += 1
+        }
+        guard index < payload.count else { return nil }
+        let image = payload[index...]
+        guard image.count >= 64, image.count <= maxImageBytes else { return nil }
+        guard mime.isEmpty || mime.hasPrefix("image/") else { return nil }
+        // Some encoders leave a stray NUL (or padding) before the image; the
+        // real start is the first JPEG/PNG/GIF/WebP signature.
+        return Data(normalizedImage(image))
+    }
+
+    /// Trims anything ahead of the image's own signature, within reason.
+    static func normalizedImage(_ image: Data) -> Data {
+        let magics: [[UInt8]] = [
+            [0xFF, 0xD8, 0xFF], // jpeg
+            [0x89, 0x50, 0x4E, 0x47], // png
+            [0x47, 0x49, 0x46, 0x38], // gif
+            [0x52, 0x49, 0x46, 0x46], // webp (riff)
+        ]
+        if magics.contains(where: { Array(image.prefix($0.count)) == $0 }) {
+            return image
+        }
+        let window = image.prefix(64)
+        for magic in magics {
+            if let range = window.range(of: Data(magic)) {
+                return Data(image.dropFirst(window.distance(from: window.startIndex, to: range.lowerBound)))
+            }
+        }
+        return image
+    }
+
+    // MARK: MP4 atoms (m4a/m4b/mp4)
+
+    private static func fromMP4(_ reader: ByteRangeReader) async -> Data? {
+        guard let size = try? await reader.fileSize(), size > 16 else { return nil }
+        // moov > udta > meta > ilst > covr > data, each a direct child of the
+        // previous. Headers only: a 500 MB mdat is stepped over, never read.
+        guard let moov = await child(reader, of: AtomRange(start: 0, end: size), type: "moov"),
+              let udta = await child(reader, of: moov, type: "udta"),
+              let meta = await child(reader, of: udta, type: "meta"),
+              // `meta` is a full box: four version/flags bytes precede its children.
+              let ilst = await child(reader, of: AtomRange(start: meta.start + 4, end: meta.end), type: "ilst"),
+              let covr = await child(reader, of: ilst, type: "covr"),
+              let data = await child(reader, of: covr, type: "data")
+        else { return nil }
+        // `data` payload: four type-flag bytes, four locale bytes, the image.
+        let payloadStart = data.start + 8
+        let length = data.end - payloadStart
+        guard length >= 64, length <= maxImageBytes else { return nil }
+        guard let payload = await bytes(reader, offset: payloadStart, length: Int(length)),
+              payload.count == Int(length)
+        else { return nil }
+        return payload
+    }
+
+    struct AtomRange {
+        let start: Int64
+        let end: Int64
+    }
+
+    /// The first direct child of `parent` with the given atom type.
+    static func child(
+        _ reader: ByteRangeReader,
+        of parent: AtomRange,
+        type: String
+    ) async -> AtomRange? {
+        var cursor = parent.start
+        var reads = 0
+        while cursor + 8 <= parent.end, reads < 128 {
+            reads += 1
+            guard let header = await bytes(reader, offset: cursor, length: 16),
+                  header.count >= 8
+            else { return nil }
+            var size = Int64(plainU32(header, 0) ?? 0)
+            let kind = String(decoding: header[4..<8], as: UTF8.self)
+            var headerLength: Int64 = 8
+            if size == 1 {
+                guard let big = plainU64(header, 8) else { return nil }
+                size = Int64(clamping: big)
+                headerLength = 16
+            } else if size == 0 {
+                size = parent.end - cursor
+            }
+            guard size >= headerLength, cursor + size <= parent.end else { return nil }
+            if kind == type {
+                return AtomRange(start: cursor + headerLength, end: cursor + size)
+            }
+            cursor += size
+        }
+        return nil
+    }
+
+    // MARK: FLAC
+
+    private static func fromFLAC(_ reader: ByteRangeReader) async -> Data? {
+        guard let marker = await bytes(reader, offset: 0, length: 4),
+              marker.count == 4, marker.starts(with: Array("fLaC".utf8))
+        else { return nil }
+        var cursor: Int64 = 4
+        for _ in 0..<64 {
+            guard let header = await bytes(reader, offset: cursor, length: 4),
+                  header.count == 4
+            else { return nil }
+            let isLast = header[0] & 0x80 != 0
+            let blockType = header[0] & 0x7F
+            let length = Int(header[1]) << 16 | Int(header[2]) << 8 | Int(header[3])
+            let body = cursor + 4
+            if blockType == 6, length >= 32, length <= maxImageBytes + 1024 {
+                guard let payload = await bytes(reader, offset: body, length: length),
+                      payload.count == length, let image = imageFromFLACPicture(payload)
+                else { return nil }
+                return image
+            }
+            if isLast { return nil }
+            guard length <= maxScanBytes else { return nil }
+            cursor = body + Int64(length)
+        }
+        return nil
+    }
+
+    /// FLAC `PICTURE`: type, mime length + mime, description length +
+    /// description, four dimension fields, data length, then the image.
+    private static func imageFromFLACPicture(_ payload: Data) -> Data? {
+        guard let mimeLength = plainU32(payload, 4), mimeLength <= 255,
+              payload.count >= 8 + Int(mimeLength) + 4
+        else { return nil }
+        let mime = String(
+            decoding: payload[8..<(8 + Int(mimeLength))], as: UTF8.self
+        ).lowercased()
+        var index = 8 + Int(mimeLength)
+        guard let descriptionLength = plainU32(payload, index) else { return nil }
+        index += 4 + Int(descriptionLength)
+        guard index + 20 <= payload.count, let dataLength = plainU32(payload, index + 16) else {
+            return nil
+        }
+        index += 20
+        guard dataLength <= maxImageBytes, index + Int(dataLength) <= payload.count else { return nil }
+        let image = payload[index..<(index + Int(dataLength))]
+        guard image.count >= 64, mime.isEmpty || mime.hasPrefix("image/") else { return nil }
+        return Data(image)
+    }
+
+    // MARK: bytes
+
+    static func plainU32(_ data: Data, _ offset: Int) -> UInt32? {
+        guard offset >= 0, offset + 4 <= data.count else { return nil }
+        return data[offset..<(offset + 4)].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+    }
+
+    static func plainU64(_ data: Data, _ offset: Int) -> UInt64? {
+        guard offset >= 0, offset + 8 <= data.count else { return nil }
+        return data[offset..<(offset + 8)].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+    }
+
+    /// ID3 sizes are 7-bit per byte ("syncsafe").
+    static func syncSafe(_ data: Data, _ offset: Int) -> Int? {
+        guard offset >= 0, offset + 4 <= data.count else { return nil }
+        var value = 0
+        for byte in data[offset..<(offset + 4)] {
+            guard byte & 0x80 == 0 else { return nil }
+            value = (value << 7) | Int(byte)
+        }
+        return value
+    }
+}
+
+/// Local files as a byte-range reader.
+public struct LocalFileByteRangeReader: ByteRangeReader {
+    private let url: URL
+
+    public init(url: URL) {
+        self.url = url
+    }
+
+    public func readRange(offset: Int64, length: Int) async throws -> Data {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        try handle.seek(toOffset: UInt64(max(0, offset)))
+        return try handle.read(upToCount: length) ?? Data()
+    }
+
+    public func fileSize() async throws -> Int64 {
+        let values = try url.resourceValues(forKeys: [.fileSizeKey])
+        return Int64(values.fileSize ?? 0)
+    }
+}
+
+/// An SFTP session as a byte-range reader, so provider artwork uses the same
+/// parser as local files.
+public struct SftpByteRangeReader: ByteRangeReader {
+    private let session: SshSession
+    private let path: String
+
+    public init(session: SshSession, path: String) {
+        self.session = session
+        self.path = path
+    }
+
+    public func readRange(offset: Int64, length: Int) async throws -> Data {
+        try await session.read(
+            path, offset: UInt64(max(0, offset)), length: UInt32(clamping: length)
+        )
+    }
+
+    public func fileSize() async throws -> Int64 {
+        guard let entry = try await session.stat(path) else { return 0 }
+        return entry.size
+    }
+}

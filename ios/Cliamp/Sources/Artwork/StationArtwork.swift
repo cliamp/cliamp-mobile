@@ -2,6 +2,7 @@ import CliampCore
 import CryptoKit
 import Foundation
 import ImageIO
+import os
 import Synchronization
 import UIKit
 
@@ -17,6 +18,8 @@ import UIKit
 final class StationArtwork: @unchecked Sendable {
     static let shared = StationArtwork()
 
+    static let log = Logger(subsystem: "stream.cliamp.mobile", category: "artwork")
+
     private static let maxHTML = 64 * 1024
     private static let maxImage = 4 * 1024 * 1024
     private static let target: CGFloat = 512
@@ -24,6 +27,11 @@ final class StationArtwork: @unchecked Sendable {
     private static let missRetry: TimeInterval = 60
     private static let diskTTL: TimeInterval = 7 * 24 * 60 * 60
     private static let userAgent = "cliamp-mobile/0.0.1 (+https://cliamp.stream)"
+
+    /// Embedded tag artwork (ID3 APIC, MP4 covr, FLAC picture) for stations
+    /// whose cover field is empty; set at launch, since it needs the file
+    /// reader for local songs and the SFTP sessions for provider tracks.
+    var embeddedArtwork: (@Sendable (Station) async -> Data?)?
 
     private let images = NSCache<NSString, UIImage>()
     private let smallImages = NSCache<NSString, UIImage>()
@@ -91,6 +99,21 @@ final class StationArtwork: @unchecked Sendable {
     private func cover(for station: Station, target: CGFloat) async -> UIImage? {
         if station.cover.hasPrefix("http") {
             return await download(station.cover, saveAs: station.id, target: target)
+        }
+        // No sidecar and no URL: the art is inside the file's own tags.
+        if station.cover.isEmpty, let embeddedArtwork {
+            let data = await embeddedArtwork(station)
+            if let data {
+                if let image = Self.scaledImage(data: data, target: target) {
+                    // The disk cache is keyed by station id, so the next
+                    // launch reads the extracted cover instead of the tag.
+                    try? data.write(to: fileURL(station.id), options: .atomic)
+                    return image
+                }
+                Self.log.error(
+                    "embedded art decode failed bytes=\(data.count, privacy: .public) id=\(station.id, privacy: .public)"
+                )
+            }
         }
         // Companion folder art next to an indexed local file (DEC-02).
         if station.cover.hasPrefix("file:"),

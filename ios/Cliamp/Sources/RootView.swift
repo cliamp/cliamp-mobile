@@ -59,6 +59,28 @@ struct RootView: View {
             // Provider tracks play over SFTP through the resource loader;
             // the player resolves accounts through the shared model.
             let providers = ProviderServices.shared.model
+            // Cover art fallback for files with no companion image: read the
+            // file's own tags, locally or over SFTP.
+            StationArtwork.shared.embeddedArtwork = { [providers] station in
+                switch station.source {
+                case .local:
+                    guard let url = URL(string: station.url), url.isFileURL else { return nil }
+                    return await EmbeddedArtwork.extract(
+                        from: LocalFileByteRangeReader(url: url),
+                        fileExtension: url.pathExtension
+                    )
+                case .provider:
+                    guard let ref = SftpURI.parse(station.url),
+                          let session = await providers.session(forAccountId: ref.accountId)
+                    else { return nil }
+                    return await EmbeddedArtwork.extract(
+                        from: SftpByteRangeReader(session: session, path: ref.path),
+                        fileExtension: (ref.path as NSString).pathExtension
+                    )
+                default:
+                    return nil
+                }
+            }
             player.sftpSessionProvider = { @Sendable accountId in
                 await providers.session(forAccountId: accountId)
             }
