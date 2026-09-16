@@ -183,11 +183,19 @@ public actor SshSession: RemoteFileTree {
         do {
             let names = try await sftp.listDirectory(atPath: path)
             var entries: [RemoteEntry] = []
+            // One NAME response can hold several entries (asyncssh batches
+            // them), so every component counts, not just the message's last.
             for name in names {
-                guard let component = name.components.last else { continue }
-                let filename = component.filename
-                guard filename != ".", filename != ".." else { continue }
-                entries.append(Self.entry(path: path, name: filename, attributes: component.attributes))
+                for component in name.components {
+                    let filename = component.filename
+                    guard filename != ".", filename != "..", !filename.isEmpty else { continue }
+                    entries.append(Self.entry(
+                        path: path,
+                        name: filename,
+                        attributes: component.attributes,
+                        longname: component.longname
+                    ))
+                }
             }
             return entries
         } catch {
@@ -234,16 +242,10 @@ public actor SshSession: RemoteFileTree {
     private static func entry(
         path: String,
         name: String,
-        attributes: SFTPFileAttributes
+        attributes: SFTPFileAttributes,
+        longname: String = ""
     ) -> RemoteEntry {
-        let mode = attributes.permissions ?? 0
-        let kind: RemoteEntry.Kind
-        switch mode & 0o170000 {
-        case 0o040000: kind = .directory
-        case 0o100000: kind = .file
-        case 0o120000: kind = .symlink
-        default: kind = .other
-        }
+        let kind = kind(of: attributes, longname: longname)
         let modified = attributes.accessModificationTime?.modificationTime
             .timeIntervalSince1970 ?? 0
         return RemoteEntry(
@@ -253,6 +255,26 @@ public actor SshSession: RemoteFileTree {
             size: Int64(attributes.size ?? 0),
             modifiedAt: Int64(max(0, modified))
         )
+    }
+
+    /// The SFTP type bits when the server sent them, else the leading letter
+    /// of the `ls -l` line — asyncssh's readdir omits permissions for many
+    /// entries, and without this every subfolder reads as "other".
+    static func kind(of attributes: SFTPFileAttributes, longname: String) -> RemoteEntry.Kind {
+        if let mode = attributes.permissions {
+            switch mode & 0o170000 {
+            case 0o040000: return .directory
+            case 0o100000: return .file
+            case 0o120000: return .symlink
+            default: break
+            }
+        }
+        switch longname.first {
+        case "d": return .directory
+        case "l": return .symlink
+        case "-": return .file
+        default: return .other
+        }
     }
 }
 
