@@ -77,6 +77,9 @@ public struct SftpScan: Sendable {
         var directories = 0
         var visited = Set<String>()
         var batch: [ScannedTrack] = []
+        /// The first failure to list a configured root; a subdirectory's
+        /// failure is normal, a root's is why the whole scan came up empty.
+        var rootError: Error?
     }
 
     /// Total tracks found. Throws whatever the connection threw when no root
@@ -98,6 +101,7 @@ public struct SftpScan: Sendable {
             }
         }
         flush(&state)
+        if state.found == 0, let rootError = state.rootError { throw rootError }
         if walked == 0, let lastError { throw lastError }
         return state.found
     }
@@ -122,6 +126,9 @@ public struct SftpScan: Sendable {
         } catch {
             // An unreadable subdirectory is normal (permissions, a stale
             // mount) and is not a reason to abandon the rest of the library.
+            // A configured root that cannot be listed is different: report it
+            // when nothing else was found.
+            if depth == 0, state.rootError == nil { state.rootError = error }
             return
         }
 

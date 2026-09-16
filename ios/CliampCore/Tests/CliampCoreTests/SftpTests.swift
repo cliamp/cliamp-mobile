@@ -80,6 +80,87 @@ private final class TrackBox: @unchecked Sendable {
     }
 }
 
+@Suite("provider accounts")
+struct ProviderAccountStoreTests {
+    private func store() -> (ProviderAccountStore, MemoryVault) {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cliamp-providers-\(UUID().uuidString).json")
+        let vault = MemoryVault()
+        return (ProviderAccountStore(file: url, vault: vault), vault)
+    }
+
+    @Test("secrets go to the vault; the file keeps non-secret fields only")
+    func secretSplitting() throws {
+        let (store, vault) = store()
+        let account = store.save(
+            id: nil,
+            providerKey: "ssh",
+            label: "me@nas",
+            values: [
+                "host": "nas", "port": "22", "user": "me",
+                "_auth": "password", "password": "hunter2", "folders": "/srv/music",
+            ],
+            spec: ProviderCatalog.ssh
+        )
+        #expect(vault.stored(accountId: account.id) == ["password": "hunter2"])
+        #expect(account.values["password"] == nil)
+        #expect(account.values["host"] == "nas")
+
+        // The raw file must not contain the secret.
+        let raw = try String(contentsOf: store.fileForTesting, encoding: .utf8)
+        #expect(!raw.contains("hunter2"))
+
+        let resolved = store.resolvedValues(for: account, spec: ProviderCatalog.ssh)
+        #expect(resolved["password"] == "hunter2")
+        #expect(resolved["host"] == "nas")
+    }
+
+    @Test("editing keeps the id and replaces the stored values")
+    func editing() {
+        let (store, vault) = store()
+        let account = store.save(
+            id: nil, providerKey: "ssh", label: "me@nas",
+            values: ["host": "nas", "user": "me", "_auth": "password", "password": "one"],
+            spec: ProviderCatalog.ssh
+        )
+        let edited = store.save(
+            id: account.id, providerKey: "ssh", label: "me@nas:2222",
+            values: ["host": "nas", "port": "2222", "user": "me", "_auth": "password", "password": "two"],
+            spec: ProviderCatalog.ssh
+        )
+        #expect(edited.id == account.id)
+        #expect(store.all().count == 1)
+        #expect(vault.stored(accountId: account.id) == ["password": "two"])
+    }
+
+    @Test("removing an account deletes its secrets and persists")
+    func removal() {
+        let (store, vault) = store()
+        let account = store.save(
+            id: nil, providerKey: "ssh", label: "me@nas",
+            values: ["host": "nas", "user": "me", "_auth": "password", "password": "x"],
+            spec: ProviderCatalog.ssh
+        )
+        store.remove(id: account.id)
+        #expect(store.all().isEmpty)
+        #expect(vault.stored(accountId: account.id).isEmpty)
+    }
+
+    @Test("the ssh spec validates its auth branches")
+    func specValidation() {
+        let spec = ProviderCatalog.ssh
+        #expect(spec.missingRequired(["host": "nas", "user": "me", "_auth": "password"])
+            .map(\.key) == ["password"])
+        #expect(spec.missingRequired(["host": "nas", "user": "me", "_auth": "none"]).isEmpty)
+        #expect(spec.visibleFields(["_auth": "key"]).map(\.key)
+            == ["host", "port", "user", "key", "passphrase", "folders"])
+        let summary = spec.summary([
+            "host": "nas", "user": "me", "_auth": "none", "folders": "/srv/music",
+        ])
+        #expect(summary == "me@nas · /srv/music")
+    }
+}
+
 @Suite("sftp describe")
 struct SftpDescribeTests {
     @Test("a full Artist/Album/Track layout is read from the path")

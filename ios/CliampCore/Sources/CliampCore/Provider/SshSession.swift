@@ -15,6 +15,7 @@ public enum SshError: Error, LocalizedError, Sendable {
     case noMusicFolder
     case notAFolder(String)
     case missing(String)
+    case validation(String)
 
     public var errorDescription: String? {
         switch self {
@@ -34,6 +35,8 @@ public enum SshError: Error, LocalizedError, Sendable {
             "not a folder on the server: \(folders)"
         case .missing(let path):
             "no such file: \(path)"
+        case .validation(let message):
+            message
         }
     }
 }

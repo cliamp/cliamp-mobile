@@ -56,6 +56,12 @@ struct RootView: View {
             player.downloadLookup = { [downloads = services.downloads] url in
                 downloads.localPath(url: url)
             }
+            // Provider tracks play over SFTP through the resource loader;
+            // the player resolves accounts through the shared model.
+            let providers = ProviderServices.shared.model
+            player.sftpSessionProvider = { @Sendable accountId in
+                await providers.session(forAccountId: accountId)
+            }
             services.search.favoritesProvider = { [app] in app.favorites }
             services.search.historyProvider = { [app] in app.history }
             // Android restores the last station to the bus but never plays it
@@ -78,6 +84,38 @@ struct RootView: View {
             }
             if arguments.contains("-cliamp-preview-playing") {
                 player.play(CliampRadio.builtin[0])
+            }
+            if let index = arguments.firstIndex(of: "-cliamp-preview-provider"),
+               index + 1 < arguments.count {
+                // "<host>,<port>,<user>,<password>[,<folders>]" against a
+                // local test server: seeds the account so the UI and the
+                // player can be exercised without typing.
+                let parts = arguments[index + 1]
+                    .split(separator: ",", omittingEmptySubsequences: false)
+                    .map(String.init)
+                if parts.count >= 4 {
+                    let folders = parts.count > 4 ? parts[4] : "/tmp/cliamp-sftp/music"
+                    let existing = providers.accounts.first {
+                        $0.values["host"] == parts[0] && $0.values["user"] == parts[2]
+                    }
+                    let account = providers.saveAccount(
+                        id: existing?.id, providerKey: "ssh",
+                        label: "\(parts[2])@\(parts[0]):\(parts[1])",
+                        values: [
+                            "host": parts[0], "port": parts[1], "user": parts[2],
+                            "_auth": "password", "password": parts[3], "folders": folders,
+                        ]
+                    )
+                    if arguments.contains("-cliamp-preview-provider-play"), let account {
+                        Task {
+                            await providers.rescan(account)
+                            if let track = providers.tracks(accountId: account.id).first {
+                                player.play(track.station)
+                                showPlayer = true
+                            }
+                        }
+                    }
+                }
             }
             if let index = arguments.firstIndex(of: "-cliamp-preview-url"), index + 1 < arguments.count,
                let station = Station.custom(name: "preview", url: arguments[index + 1])

@@ -10,6 +10,8 @@ enum LibraryDestination: Hashable {
     case playlistAdding(String)
     case providers
     case providersConnect
+    case providerBrowse(String)
+    case providerWizard(String?)
 }
 
 /// The third tab: pinned smart lists, connected providers and the user's

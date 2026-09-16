@@ -104,6 +104,11 @@ final class RadioPlayer {
     /// progress goes. Both are wired to the podcast store; radio ignores them.
     var resumeProvider: ((Station) -> Int64)?
     var progressSink: ((Station, Int64, Int64) -> Void)?
+    /// Resolves an SSH account for `cliamp-sftp://` playback; set at launch.
+    var sftpSessionProvider: (@Sendable (String) async -> SshSession?)?
+    /// Loaders are retained per item: AVPlayer asks through a delegate the
+    /// asset holds weakly, so the player must keep it alive.
+    private var sftpLoaders: [ObjectIdentifier: SftpResourceLoader] = [:]
 
     /// A downloaded episode's local path, preferred over the network when the
     /// same remote URL has a file on disk.
@@ -232,7 +237,25 @@ final class RadioPlayer {
         // A replacement stream gets a fresh stall deadline; if the previous
         // status was buffering, no status change will re-arm it.
         bufferingSinceMs = wantsToPlay ? nowMs() : nil
-        let item = AVPlayerItem(url: url)
+        let item: AVPlayerItem
+        if url.scheme == SftpURI.scheme,
+           let ref = SftpURI.parse(url.absoluteString),
+           let sessions = sftpSessionProvider {
+            // A custom scheme has to be served by a resource loader; the
+            // delegate answers range reads straight off the SSH session.
+            let asset = AVURLAsset(url: url)
+            let loader = SftpResourceLoader(
+                accountId: ref.accountId, path: ref.path, sessions: sessions
+            )
+            asset.resourceLoader.setDelegate(
+                loader,
+                queue: DispatchQueue(label: "stream.cliamp.sftp.loader", qos: .userInitiated)
+            )
+            item = AVPlayerItem(asset: asset)
+            sftpLoaders = [ObjectIdentifier(item): loader]
+        } else {
+            item = AVPlayerItem(url: url)
+        }
         // A post-effects tap gives the meters the PCM that is actually
         // playing, for the real FFT. If the tap cannot attach, the meter
         // falls back to its idle stagger and audio is unaffected.

@@ -17,6 +17,7 @@ struct MainShell: View {
     @Binding var showSettings: Bool
     @State private var library = LibraryModel()
     @State private var libraryPath: [LibraryDestination] = []
+    private let providers = ProviderServices.shared.model
 
     var body: some View {
         GeometryReader { proxy in
@@ -52,6 +53,18 @@ struct MainShell: View {
             if arguments.contains("-cliamp-preview-library-providers") {
                 tab = .library
                 libraryPath = [.providers]
+            }
+            if arguments.contains("-cliamp-preview-provider-connect") {
+                tab = .library
+                libraryPath = [.providersConnect]
+            }
+            if arguments.contains("-cliamp-preview-provider-wizard") {
+                tab = .library
+                libraryPath = [.providerWizard(nil)]
+            }
+            if arguments.contains("-cliamp-preview-provider-browse"), let account = providers.accounts.first {
+                tab = .library
+                libraryPath = [.providerBrowse(account.id)]
             }
             if arguments.contains("-cliamp-preview-library-playlist") {
                 tab = .library
@@ -217,17 +230,58 @@ struct MainShell: View {
             )
         case .providers:
             ProvidersSongsPane(
+                model: providers,
+                player: player,
+                app: app,
                 onBack: { libraryPath = [] },
                 onOpenConnect: { libraryPath = [.providersConnect] },
+                onOpenBrowse: { libraryPath = [.providerBrowse($0.id)] },
                 onOpenSearch: { showSearch = true },
                 onOpenSettings: onOpenSettings
             )
         case .providersConnect:
             ProvidersConnectPane(
+                model: providers,
                 onBack: { libraryPath = [.providers] },
+                onAdd: { libraryPath = [.providerWizard(nil)] },
+                onEdit: { libraryPath = [.providerWizard($0.id)] },
+                onOpen: { libraryPath = [.providerBrowse($0.id)] },
                 onOpenSearch: { showSearch = true },
                 onOpenSettings: onOpenSettings
             )
+        case .providerBrowse(let accountId):
+            if let account = providers.account(id: accountId) {
+                ProviderBrowseScreen(
+                    model: providers,
+                    player: player,
+                    account: account,
+                    onBack: { libraryPath = [.providersConnect] },
+                    onEdit: { libraryPath = [.providerWizard(accountId)] },
+                    onOpenSearch: { showSearch = true },
+                    onOpenSettings: onOpenSettings
+                )
+            } else {
+                ProvidersConnectPane(
+                    model: providers,
+                    onBack: { libraryPath = [] },
+                    onAdd: { libraryPath = [.providerWizard(nil)] },
+                    onEdit: { libraryPath = [.providerWizard($0.id)] },
+                    onOpen: { libraryPath = [.providerBrowse($0.id)] },
+                    onOpenSearch: { showSearch = true },
+                    onOpenSettings: onOpenSettings
+                )
+            }
+        case .providerWizard(let accountId):
+            if let spec = (accountId.flatMap { providers.account(id: $0) }
+                .flatMap { providers.spec(for: $0) }) ?? ProviderCatalog.byKey("ssh") {
+                ProviderWizardScreen(
+                    model: providers,
+                    spec: spec,
+                    accountId: accountId,
+                    onSaved: { _ in libraryPath = [.providersConnect] },
+                    onBack: { libraryPath = [.providersConnect] }
+                )
+            }
         }
     }
 
