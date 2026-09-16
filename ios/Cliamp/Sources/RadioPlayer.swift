@@ -2,6 +2,7 @@ import AVFoundation
 import CliampCore
 import Foundation
 import Observation
+import os
 
 /// One AVPlayer owns the session, so nothing can ever produce two streams.
 /// The engine is deliberately small until FND-03 picks the final audio stack;
@@ -10,6 +11,7 @@ import Observation
 @Observable
 final class RadioPlayer {
     private let player = AVPlayer()
+    private let errorLog = Logger(subsystem: "stream.cliamp.mobile", category: "player")
     private var timeControlObservation: NSKeyValueObservation?
     private var itemStatusObservation: NSKeyValueObservation?
     private var tap: SpectrumTap?
@@ -49,8 +51,13 @@ final class RadioPlayer {
         // A post-effects tap gives the meters the PCM that is actually
         // playing, for the real FFT. If the tap cannot attach, the meter
         // falls back to its idle stagger and audio is unaffected.
+        #if DEBUG
+        let tapDisabled = ProcessInfo.processInfo.arguments.contains("-cliamp-no-tap")
+        #else
+        let tapDisabled = false
+        #endif
         let spectrumTap = SpectrumTap(store: spectrum)
-        if let processor = spectrumTap.makeProcessingTap() {
+        if !tapDisabled, let processor = spectrumTap.makeProcessingTap() {
             let mix = AVMutableAudioMix()
             let parameters = AVMutableAudioMixInputParameters()
             parameters.audioTapProcessor = processor
@@ -61,8 +68,12 @@ final class RadioPlayer {
         itemStatusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
             let status = item.status
             let message = item.error?.localizedDescription
+            let error = item.error as NSError?
             Task { @MainActor [weak self] in
                 guard let self, status == .failed else { return }
+                self.errorLog.error(
+                    "item failed code=\(error?.code ?? 0, privacy: .public) domain=\(error?.domain ?? "-", privacy: .public) underlying=\(String(describing: error?.userInfo[NSUnderlyingErrorKey]), privacy: .public)"
+                )
                 self.error = message ?? "couldn't play that stream"
                 self.playing = false
             }

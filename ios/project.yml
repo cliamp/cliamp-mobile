@@ -46,6 +46,13 @@ targets:
           - jetbrains_mono_bold.ttf
         UIBackgroundModes:
           - audio
+        # DEC-07: the directory lists many stations that still stream over
+        # plain HTTP, and the media-only exception is not honoured for
+        # AVPlayerItem loads on iOS 26 (verified -1022 with
+        # NSAllowsArbitraryLoadsForMedia set). A blanket exception matches
+        # Android's behaviour; QA-05 owns the App Review justification note.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
