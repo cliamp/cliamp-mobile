@@ -99,10 +99,20 @@ final class StationArtwork: @unchecked Sendable {
     private let extractions = Mutex<[String: Extraction]>([:])
     private let extractionSlots = AsyncSlots(limit: 3)
 
+    private enum ExtractionOutcome {
+        case flight(Extraction)
+        case cached(Data)
+    }
+
     private func embeddedData(for station: Station) async -> Data? {
         guard let provider = embeddedArtwork else { return nil }
-        let entry = extractions.withLock { tasks -> Extraction in
-            if let existing = tasks[station.id] { return existing }
+        // The cache check and the entry claim share one lock: a caller cannot
+        // slip between another extraction's publish and its entry removal.
+        let outcome = extractions.withLock { tasks -> ExtractionOutcome in
+            if let existing = tasks[station.id] { return .flight(existing) }
+            if let cached = try? Data(contentsOf: fileURL(station.id)), !cached.isEmpty {
+                return .cached(cached)
+            }
             let created = Extraction()
             created.task = Task { () -> Data? in
                 do {
@@ -119,28 +129,58 @@ final class StationArtwork: @unchecked Sendable {
                 }
             }
             tasks[station.id] = created
-            return created
+            return .flight(created)
         }
-        entry.join()
-        defer {
-            if entry.leave() {
-                // Nobody is waiting: stop the work and drop the entry.
+
+        switch outcome {
+        case .cached(let data):
+            return data
+        case .flight(let entry):
+            entry.join()
+            // One waiter-removal exactly, whether this caller finishes or its
+            // task is cancelled; cancelling the last waiter stops the work.
+            let once = Once()
+            let data = await withTaskCancellationHandler {
+                await entry.task.value
+            } onCancel: {
+                if once.claim() {
+                    if entry.leave() {
+                        entry.task.cancel()
+                        self.drop(entry, for: station.id)
+                    }
+                }
+            }
+            // Publish the reusable result before dropping the entry: a caller
+            // that arrives in between must find the cache, not start over.
+            if let data {
+                try? data.write(to: fileURL(station.id), options: .atomic)
+                if let small = Self.scaledImage(data: data, target: Self.targetSmall) {
+                    smallImages.setObject(small, forKey: station.id as NSString)
+                }
+                clearMiss(station.id)
+            }
+            if once.claim(), entry.leave() {
+                // The last interested caller is gone; stop any work still
+                // running for an entry nobody will use.
                 entry.task.cancel()
-                drop(entry, for: station.id)
+            }
+            drop(entry, for: station.id)
+            return data
+        }
+    }
+
+    /// Exactly-once gate for the two paths that may remove a waiter.
+    private final class Once: @unchecked Sendable {
+        private let lock = NSLock()
+        private var claimed = false
+
+        func claim() -> Bool {
+            lock.withLock {
+                guard !claimed else { return false }
+                claimed = true
+                return true
             }
         }
-        let data = await entry.task.value
-        // Publish the reusable result before dropping the entry: a caller that
-        // arrives in between must find the disk cache, not start over.
-        if let data {
-            try? data.write(to: fileURL(station.id), options: .atomic)
-            if let small = Self.scaledImage(data: data, target: Self.targetSmall) {
-                smallImages.setObject(small, forKey: station.id as NSString)
-            }
-            clearMiss(station.id)
-        }
-        drop(entry, for: station.id)
-        return data
     }
 
     /// Removes an entry only if it is still the current one, so an older
