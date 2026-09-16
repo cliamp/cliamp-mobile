@@ -130,6 +130,15 @@ final class StationArtwork: @unchecked Sendable {
             }
         }
         let data = await entry.task.value
+        // Publish the reusable result before dropping the entry: a caller that
+        // arrives in between must find the disk cache, not start over.
+        if let data {
+            try? data.write(to: fileURL(station.id), options: .atomic)
+            if let small = Self.scaledImage(data: data, target: Self.targetSmall) {
+                smallImages.setObject(small, forKey: station.id as NSString)
+            }
+            clearMiss(station.id)
+        }
         drop(entry, for: station.id)
         return data
     }
@@ -220,10 +229,9 @@ final class StationArtwork: @unchecked Sendable {
         if station.cover.isEmpty, embeddedArtwork != nil {
             let data = await embeddedData(for: station)
             if let data {
+                // The disk write and thumbnail cache happen inside
+                // `embeddedData`; this only decodes for the requested size.
                 if let image = Self.scaledImage(data: data, target: target) {
-                    // The disk cache is keyed by station id, so the next
-                    // launch reads the extracted cover instead of the tag.
-                    try? data.write(to: fileURL(station.id), options: .atomic)
                     clearMiss(station.id)
                     return image
                 }

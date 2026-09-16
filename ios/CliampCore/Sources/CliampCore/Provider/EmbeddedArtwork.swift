@@ -88,30 +88,14 @@ public enum EmbeddedArtwork {
         guard major == 3 || major == 4, let tagSize = syncSafe(header, 6) else { return nil }
         let flags = header[5]
         let tagEnd = Int64(10 + min(tagSize, maxScanBytes))
+        guard tagEnd > 10 else { return nil }
 
-        // Extended header: v2.3's size excludes its own four bytes; v2.4's is
-        // syncsafe and includes the whole extended header.
-        var framesStart: Int64 = 10
-        if flags & 0x40 != 0 {
-            guard let ext = try await bytes(reader, offset: 10, length: 6, budget: budget),
-                  ext.count == 6
-            else { return nil }
-            let declared: Int?
-            if major == 4 {
-                declared = syncSafe(ext, 0)
-            } else {
-                declared = plainU32(ext, 0).map(Int.init)
-            }
-            guard let declared, declared >= 0, declared <= maxScanBytes else { return nil }
-            framesStart = major == 4 ? 10 + Int64(declared) : 10 + 4 + Int64(declared)
-        }
-        guard framesStart < tagEnd else { return nil }
-
-        // The whole tag body is read once (in bounded chunks) and, for v2.3,
-        // unsynchronised before parsing: frame sizes describe the decoded
-        // bytes, so walking the on-disk stream would misalign after any 0xFF.
+        // The tag body (after the ten-byte header) is read in bounded chunks.
+        // Only v2.3 unsynchronises the tag as a whole with decoded frame
+        // sizes; v2.4 marks unsynchronisation per frame and keeps encoded
+        // boundaries, so it is decoded later, once per payload.
         var body = Data()
-        var cursor = framesStart
+        var cursor: Int64 = 10
         let chunk = 256 * 1024
         while cursor < tagEnd {
             let want = Int(min(Int64(chunk), tagEnd - cursor))
@@ -121,16 +105,32 @@ public enum EmbeddedArtwork {
             body.append(part)
             cursor += Int64(part.count)
         }
-        if flags & 0x80 != 0 {
+        if major == 3, flags & 0x80 != 0 {
             body = deunsynchronised(body)
         }
-        return id3Pictures(in: body, major: major)
+
+        // Extended header, parsed in the decoded space: v2.3's size excludes
+        // its own four bytes, v2.4's is syncsafe and includes the whole
+        // extended header.
+        var start = 0
+        if flags & 0x40 != 0 {
+            if major == 4 {
+                guard let size = syncSafe(body, 0), size >= 6, size <= body.count else { return nil }
+                start = size
+            } else {
+                guard let size = plainU32(body, 0).map(Int.init),
+                      size >= 0, size + 4 <= body.count
+                else { return nil }
+                start = 4 + size
+            }
+        }
+        return id3Pictures(in: body, from: start, major: major)
     }
 
     /// Frame walk over the decoded tag body. An unsupported or oversized
     /// picture does not stop the search: a later APIC can still be the cover.
-    private static func id3Pictures(in body: Data, major: Int) -> Data? {
-        var cursor = 0
+    private static func id3Pictures(in body: Data, from start: Int, major: Int) -> Data? {
+        var cursor = start
         var candidates = 0
         while cursor + 10 <= body.count {
             let identifier = String(decoding: body[cursor..<(cursor + 4)], as: UTF8.self)

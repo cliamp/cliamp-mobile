@@ -178,6 +178,48 @@ private func id3UnsynchronisedFixture(image: Data) -> Data {
     return header + unsynchronised
 }
 
+/// A v2.4 tag with both tag-level and frame-level unsynchronisation flags:
+/// the frame's encoded size covers the inserted bytes, so the payload must be
+/// decoded exactly once after locating it.
+private func id3v24UnsynchronisedFixture(image: Data) -> Data {
+    var payload = Data([0]) // latin1
+    payload.append(contentsOf: Array("image/jpeg".utf8))
+    payload.append(0)
+    payload.append(3)
+    payload.append(0)
+    payload.append(image)
+    var encoded = Data()
+    for byte in payload {
+        encoded.append(byte)
+        if byte == 0xFF { encoded.append(0) }
+    }
+    var frame = Data([UInt8(ascii: "A"), UInt8(ascii: "P"), UInt8(ascii: "I"), UInt8(ascii: "C")])
+    frame.append(syncSafe(encoded.count)) // encoded on-disk size
+    frame.append(contentsOf: [0, 0x02]) // frame unsynchronisation
+    frame.append(encoded)
+    var header = Data([UInt8(ascii: "I"), UInt8(ascii: "D"), UInt8(ascii: "3"), 4, 0, 0x80])
+    header.append(syncSafe(frame.count))
+    return header + frame
+}
+
+/// A v2.3 tag that is unsynchronised as a whole *and* carries an extended
+/// header whose CRC can itself contain 0xFF runs.
+private func id3UnsynchronisedExtendedFixture(image: Data) -> Data {
+    let apic = id3Fixture(image: image).dropFirst(10)
+    // v2.3 extended header: size excludes its own four bytes; CRC optional.
+    // flags = CRC present, padding = 0, CRC = FF F3 00 00 (an FF run).
+    var extended = be32(10) + Data([0x80, 0x00]) + be32(0) + Data([0xFF, 0xF3, 0x00, 0x00])
+    extended.append(apic)
+    var encoded = Data()
+    for byte in extended {
+        encoded.append(byte)
+        if byte == 0xFF { encoded.append(0) }
+    }
+    var header = Data([UInt8(ascii: "I"), UInt8(ascii: "D"), UInt8(ascii: "3"), 3, 0, 0xC0])
+    header.append(syncSafe(encoded.count))
+    return header + encoded
+}
+
 /// A v2.4 tag with a syncsafe extended header (size includes itself).
 private func id3v24ExtendedHeaderFixture(image: Data) -> Data {
     let apic = id3Fixture(image: image, version: 4).dropFirst(10)
@@ -325,6 +367,23 @@ struct EmbeddedArtworkTests {
     func extendedHeaderV24() async throws {
         let image = try await EmbeddedArtwork.extract(
             from: BlobReader(id3v24ExtendedHeaderFixture(image: pngBytes)), fileExtension: "mp3"
+        )
+        #expect(image == pngBytes)
+    }
+
+    @Test("v2.4 tag and frame unsynchronisation decode the payload once")
+    func unsynchronisedV24() async throws {
+        let jpeg = Data([0xFF, 0xD8, 0xFF, 0xFF, 0x00, 0xFF, 0xE0]) + Data(count: 128)
+        let image = try await EmbeddedArtwork.extract(
+            from: BlobReader(id3v24UnsynchronisedFixture(image: jpeg)), fileExtension: "mp3"
+        )
+        #expect(image == jpeg)
+    }
+
+    @Test("an unsynchronised v2.3 extended header does not misalign frames")
+    func unsynchronisedExtendedHeader() async throws {
+        let image = try await EmbeddedArtwork.extract(
+            from: BlobReader(id3UnsynchronisedExtendedFixture(image: pngBytes)), fileExtension: "mp3"
         )
         #expect(image == pngBytes)
     }
