@@ -11,6 +11,7 @@ struct CliampAppTests {
     }
 
     @Test("root shell is constructible")
+    @MainActor
     func rootViewExists() {
         _ = RootView()
     }

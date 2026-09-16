@@ -17,6 +17,8 @@ settings:
 packages:
   CliampCore:
     path: CliampCore
+  CliampDesign:
+    path: CliampDesign
 
 targets:
   Cliamp:
@@ -24,8 +26,10 @@ targets:
     platform: iOS
     sources:
       - path: Cliamp/Sources
+      - path: Cliamp/Resources
     dependencies:
       - package: CliampCore
+      - package: CliampDesign
     info:
       path: Cliamp/Info.plist
       properties:
@@ -33,6 +37,15 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
+        UIAppFonts:
+          - poppins_regular.ttf
+          - poppins_medium.ttf
+          - poppins_bold.ttf
+          - jetbrains_mono_regular.ttf
+          - jetbrains_mono_medium.ttf
+          - jetbrains_mono_bold.ttf
+        UIBackgroundModes:
+          - audio
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
@@ -61,6 +74,7 @@ targets:
     dependencies:
       - target: Cliamp
       - package: CliampCore
+      - package: CliampDesign
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: stream.cliamp.mobile.tests
