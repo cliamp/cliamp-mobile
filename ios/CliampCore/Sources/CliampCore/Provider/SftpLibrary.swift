@@ -159,10 +159,13 @@ public final class SftpIndexStore: @unchecked Sendable {
             for (key, list) in byKey {
                 newest[key] = list.map(\.mtime).max() ?? 0
             }
+            // Android's query: newest first, then name ascending — the
+            // tie-breaker does not flip with the timestamp.
             return albums.sorted {
-                let left = (newest[$0.id] ?? 0, $0.name.lowercased())
-                let right = (newest[$1.id] ?? 0, $1.name.lowercased())
-                return left > right
+                let left = newest[$0.id] ?? 0
+                let right = newest[$1.id] ?? 0
+                if left != right { return left > right }
+                return $0.name.lowercased() < $1.name.lowercased()
             }
         }
         return albums.sorted { $0.name.lowercased() < $1.name.lowercased() }
@@ -183,11 +186,15 @@ public final class SftpIndexStore: @unchecked Sendable {
     }
 
     public func artistAlbums(accountId: String, artistKey: String) -> [SftpAlbum] {
-        albums(accountId: accountId, style: "az")
+        let all = self.tracks(accountId: accountId)
+        return albums(accountId: accountId, style: "az")
             .filter { album in
-                tracks(accountId: accountId).contains {
-                    $0.albumKey == album.id && $0.artistKey == artistKey
-                }
+                all.contains { $0.albumKey == album.id && $0.artistKey == artistKey }
+            }
+            // Android orders an artist's shelf by ascending year, then name.
+            .sorted {
+                if $0.year != $1.year { return $0.year < $1.year }
+                return $0.name.lowercased() < $1.name.lowercased()
             }
     }
 

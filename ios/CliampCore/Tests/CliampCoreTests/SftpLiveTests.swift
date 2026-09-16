@@ -116,6 +116,11 @@ struct SftpLiveTests {
         #expect(box.tracks.contains { $0.artist == "Boards of Canada" && $0.album == "Music Has the Right to Children" })
         #expect(box.tracks.contains { $0.title == "loose track" && $0.artist == "" })
 
+        let stat = try await session.stat("\(Self.root)/loose track.m4a")
+        #expect(stat?.path == "\(Self.root)/loose track.m4a")
+        #expect(stat?.kind == .file)
+        #expect(stat?.size ?? 0 > 0)
+
         let first = try await session.read(
             "\(Self.root)/Boards of Canada/Music Has the Right to Children/01 - Wildlife Analysis.m4a",
             offset: 0, length: 32

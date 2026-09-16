@@ -9,6 +9,8 @@ private final class FakeTree: RemoteFileTree, @unchecked Sendable {
     var canonical: [String: String] = [:]
     var stats: [String: RemoteEntry] = [:]
     var unreadable: Set<String> = []
+    /// Listing these paths throws the given error instead of reading.
+    var failures: [String: Error] = [:]
     private let lock = NSLock()
     private(set) var listed: [String] = []
 
@@ -25,13 +27,20 @@ private final class FakeTree: RemoteFileTree, @unchecked Sendable {
     }
 
     func list(_ path: String) async throws -> [RemoteEntry] {
-        let result: [RemoteEntry]? = lock.withLock {
-            listed.append(path)
-            if unreadable.contains(path) { return nil }
-            return entries[path] ?? []
+        enum Outcome {
+            case entries([RemoteEntry])
+            case failure(Error)
         }
-        guard let result else { throw SshError.missing(path) }
-        return result
+        let outcome: Outcome = lock.withLock {
+            listed.append(path)
+            if let failure = failures[path] { return .failure(failure) }
+            if unreadable.contains(path) { return .failure(SshError.missing(path)) }
+            return .entries(entries[path] ?? [])
+        }
+        switch outcome {
+        case .entries(let entries): return entries
+        case .failure(let error): throw error
+        }
     }
 
     func stat(_ path: String) async throws -> RemoteEntry? {
@@ -217,6 +226,14 @@ struct SftpDescribeTests {
         #expect(split.album == "Geogaddi")
     }
 
+    @Test("only the first separator names the artist")
+    func multiSeparatorFolder() {
+        let track = describe(root: "/m", path: "/m/Pink Floyd - 1973 - Dark Side/01.mp3")
+        #expect(track.artist == "Pink Floyd")
+        #expect(track.album == "Dark Side")
+        #expect(track.year == 1973)
+    }
+
     @Test("a flat folder gets the folder's name as the album and no artist")
     func flatFolder() {
         let track = describe(root: "/srv/music", path: "/srv/music/loose.mp3")
@@ -310,6 +327,35 @@ struct SftpScanTests {
         #expect(box.tracks.count == 600)
     }
 
+    @Test("a refused credential fails the scan instead of reporting zero")
+    func refusesToSucceedOnAuthFailure() async {
+        let tree = FakeTree(entries: ["/m": [file("/m/a.mp3")]])
+        tree.failures["/m"] = SshError.refusedCredentials
+        await #expect(throws: SshError.self) {
+            try await collect(SftpScan(folders: ["/m"], onBatch: { _ in }), tree)
+        }
+    }
+
+    @Test("cancellation propagates out of the walk")
+    func cancellationPropagates() async {
+        let tree = FakeTree(entries: ["/m": [file("/m/a.mp3")]])
+        tree.failures["/m"] = CancellationError()
+        await #expect(throws: CancellationError.self) {
+            try await collect(SftpScan(folders: ["/m"], onBatch: { _ in }), tree)
+        }
+    }
+
+    @Test("a missing subdirectory is still skipped, not fatal")
+    func missingSubdirectoryRecovers() async throws {
+        let tree = FakeTree(entries: [
+            "/m": [directory("/m/Gone"), directory("/m/Here")],
+            "/m/Here": [file("/m/Here/a.mp3")],
+        ])
+        tree.failures["/m/Gone"] = SshError.missing("/m/Gone")
+        let tracks = try await collect(SftpScan(folders: ["/m"], onBatch: { _ in }), tree)
+        #expect(tracks.map(\.path) == ["/m/Here/a.mp3"])
+    }
+
     @Test("suggested folders only include places that hold audio")
     func folderSuggestions() async throws {
         let tree = FakeTree(
@@ -324,6 +370,51 @@ struct SftpScanTests {
         )
         let folders = await suggestMusicFolders(tree)
         #expect(folders == ["/home/music"])
+    }
+
+    @Test("a folder holding only hidden audio is not suggested")
+    func hiddenFoldersNotSuggested() async {
+        let tree = FakeTree(entries: [
+            "/": [directory("/home")],
+            "/home": [directory("/home/.secret")],
+            "/home/.secret": [file("/home/.secret/a.mp3")],
+        ], canonical: [".": "/home"])
+        #expect(await suggestMusicFolders(tree) == [])
+    }
+
+    @Test("newest albums tie-break by name ascending")
+    func newestTieBreak() {
+        let store = SftpIndexStore(file: FileManager.default.temporaryDirectory
+            .appendingPathComponent("cliamp-sftp-\(UUID().uuidString).json"))
+        let tracks = [
+            SftpTrack(accountId: "acc", scanned: describe(root: "/m", path: "/m/Zeta/a.mp3", mtime: 10)),
+            SftpTrack(accountId: "acc", scanned: describe(root: "/m", path: "/m/Alpha/a.mp3", mtime: 10)),
+        ]
+        store.commit(accountId: "acc", folders: ["/m"], scannedAt: 1, tracks: tracks)
+        #expect(store.albums(accountId: "acc", style: "newest").map(\.name) == ["Alpha", "Zeta"])
+    }
+}
+
+@Suite("ssh probe preflight")
+struct SshProbePreflightTests {
+    @Test("a malformed key is refused before any socket is opened")
+    func malformedKey() async {
+        let values: [String: String] = [
+            "host": "127.0.0.1", "port": "9", "user": "tester",
+            "_auth": "key", "key": "-----BEGIN OPENSSH PRIVATE KEY-----\nnot really\n",
+            "folders": "/m",
+        ]
+        do {
+            _ = try await SshProbe.probe(values)
+            Issue.record("expected the malformed key to fail")
+        } catch let error as SshError {
+            guard case .keyUnreadable = error else {
+                Issue.record("wrong error: \(error)")
+                return
+            }
+        } catch {
+            Issue.record("wrong error type: \(error)")
+        }
     }
 }
 

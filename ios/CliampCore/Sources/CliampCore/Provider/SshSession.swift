@@ -1,5 +1,6 @@
 @preconcurrency import Citadel
 import Crypto
+@preconcurrency import NIOSSH
 import Foundation
 import NIOCore
 import NIOSSH
@@ -71,6 +72,36 @@ private final class PinnedHostKey: NIOSSHClientServerAuthenticationDelegate, @un
     }
 }
 
+/// Offers the configured credential set, in order, exactly once each. SSH's
+/// `none` method is a real offer (Tailscale's whole login), not a fallback.
+private final class AccountAuthentication: NIOSSHClientUserAuthenticationDelegate, @unchecked Sendable {
+    private let username: String
+    private let offers: [NIOSSHUserAuthenticationOffer.Offer]
+    private var index = 0
+
+    init(username: String, offers: [NIOSSHUserAuthenticationOffer.Offer]) {
+        self.username = username
+        self.offers = offers
+    }
+
+    func nextAuthenticationType(
+        availableMethods: NIOSSHAvailableUserAuthenticationMethods,
+        nextChallengePromise: EventLoopPromise<NIOSSHUserAuthenticationOffer?>
+    ) {
+        guard index < offers.count else {
+            nextChallengePromise.succeed(nil)
+            return
+        }
+        let offer = offers[index]
+        index += 1
+        nextChallengePromise.succeed(
+            NIOSSHUserAuthenticationOffer(
+                username: username, serviceName: "ssh-connection", offer: offer
+            )
+        )
+    }
+}
+
 /// One SSH connection's SFTP session. Actor-owned because Citadel's client
 /// types are not Sendable; every call serializes here, which is also what a
 /// single SFTP channel wants.
@@ -78,7 +109,13 @@ public actor SshSession: RemoteFileTree {
     private let config: SshConfig
     private var client: SSHClient?
     private var sftp: SFTPClient?
-    private var pinned: PinnedHostKey?
+    /// The connection being established, shared by concurrent first callers so
+    /// actor reentrancy cannot open (and then lose) several transports.
+    private var connecting: Task<SFTPClient, Error>?
+    /// Directory listings leak their remote handles in the SFTP client we
+    /// depend on (Citadel never sends CLOSE for OPENDIR), so the channel is
+    /// recycled periodically: closing it reclaims every leaked handle at once.
+    private var listingsSinceRecycle = 0
 
     /// The fingerprint this session pinned or confirmed, once connected.
     public private(set) var fingerprint: String?
@@ -91,13 +128,39 @@ public actor SshSession: RemoteFileTree {
 
     private func channel() async throws -> SFTPClient {
         if let sftp { return sftp }
-        let validator = PinnedHostKey(expected: config.fingerprint)
-        pinned = validator
+        if let connecting { return try await connecting.value }
         let config = self.config
+        let validator = PinnedHostKey(expected: config.fingerprint)
+        let task = Task<SFTPClient, Error>.detached {
+            try await Self.connect(config: config, validator: validator)
+        }
+        connecting = task
+        do {
+            let sftp = try await task.value
+            guard !Task.isCancelled else {
+                try? await sftp.close()
+                throw CancellationError()
+            }
+            self.sftp = sftp
+            connecting = nil
+            fingerprint = config.fingerprint.isEmpty
+                ? validator.learnedFingerprint
+                : config.fingerprint
+            return sftp
+        } catch {
+            connecting = nil
+            if let error = error as? SshError { throw error }
+            throw Self.failure(error)
+        }
+    }
+
+    private static func connect(config: SshConfig, validator: PinnedHostKey) async throws -> SFTPClient {
+        let offers = try offers(for: config)
+        let auth = AccountAuthentication(username: config.user, offers: offers)
         let settings = SSHClientSettings(
             host: config.host,
             port: config.port,
-            authenticationMethod: { Self.authentication(for: config) },
+            authenticationMethod: { SSHAuthenticationMethod.custom(auth) },
             hostKeyValidator: .custom(validator)
         )
         let client: SSHClient
@@ -108,20 +171,25 @@ public actor SshSession: RemoteFileTree {
         } catch is InvalidHostKey {
             throw SshError.hostKeyMismatch(expected: config.fingerprint, actual: "")
         } catch {
-            throw Self.failure(error)
+            throw failure(error)
         }
         do {
-            let sftp = try await client.openSFTP()
-            self.client = client
-            self.sftp = sftp
-            fingerprint = config.fingerprint.isEmpty
-                ? validator.learnedFingerprint
-                : config.fingerprint
-            return sftp
+            return try await client.openSFTP()
         } catch {
             try? await client.close()
-            throw Self.failure(error)
+            throw failure(error)
         }
+    }
+
+    /// Recycles the SFTP channel every so many listings, reclaiming the
+    /// directory handles the dependency leaks.
+    private func recycleIfNeeded() async {
+        guard listingsSinceRecycle >= 200, let client else { return }
+        listingsSinceRecycle = 0
+        let old = sftp
+        sftp = nil
+        try? await old?.close()
+        sftp = try? await client.openSFTP()
     }
 
     /// Turns Citadel's transport errors into the wizard's wording.
@@ -142,28 +210,37 @@ public actor SshSession: RemoteFileTree {
         return error
     }
 
-    private static func authentication(for config: SshConfig) -> SSHAuthenticationMethod {
+    /// Builds the offer for the configured auth path. A key is parsed here,
+    /// before any socket is opened, so a malformed key or wrong passphrase
+    /// reports itself instead of masquerading as bad credentials.
+    private static func offers(for config: SshConfig) throws -> [NIOSSHUserAuthenticationOffer.Offer] {
         switch config.auth {
-        case .password, .none:
-            return .passwordBased(username: config.user, password: config.password)
+        case .password:
+            return [.password(.init(password: config.password))]
+        case .none:
+            // Tailscale (or any tailnet login) has no credential to send:
+            // SSH's "none" method is the whole offer.
+            return [.none]
         case .key:
             let passphrase = config.passphrase.isEmpty ? nil : Data(config.passphrase.utf8)
             let key = config.privateKey.trimmingCharacters(in: .whitespacesAndNewlines)
             if let ed25519 = try? Curve25519.Signing.PrivateKey(sshEd25519: key, decryptionKey: passphrase) {
-                return .ed25519(username: config.user, privateKey: ed25519)
+                return [.privateKey(.init(privateKey: .init(ed25519Key: ed25519)))]
             }
-            // Citadel parses ed25519 and RSA OpenSSH keys; ECDSA keys are
-            // not supported yet, and the connect below fails clearly.
             if let rsa = try? Insecure.RSA.PrivateKey(sshRsa: key, decryptionKey: passphrase) {
-                return .rsa(username: config.user, privateKey: rsa)
+                // RSA offers sign with ssh-rsa (SHA-1) here; servers that have
+                // disabled that algorithm refuse it. Ed25519 is preferred.
+                return [.privateKey(.init(privateKey: .init(custom: rsa)))]
             }
-            // The connection will fail on the empty offer; the error below is
-            // the accurate one, so keep it readable.
-            return .passwordBased(username: config.user, password: "")
+            throw SshError.keyUnreadable(
+                "unsupported or malformed key (ed25519 and RSA OpenSSH keys work), or the passphrase is wrong"
+            )
         }
     }
 
     public func close() async {
+        connecting?.cancel()
+        connecting = nil
         if let sftp { try? await sftp.close() }
         if let client { try? await client.close() }
         sftp = nil
@@ -183,8 +260,10 @@ public actor SshSession: RemoteFileTree {
 
     public func list(_ path: String) async throws -> [RemoteEntry] {
         let sftp = try await channel()
+        defer { listingsSinceRecycle += 1 }
         do {
             let names = try await sftp.listDirectory(atPath: path)
+            await recycleIfNeeded()
             var entries: [RemoteEntry] = []
             // One NAME response can hold several entries (asyncssh batches
             // them), so every component counts, not just the message's last.
@@ -210,7 +289,16 @@ public actor SshSession: RemoteFileTree {
         let sftp = try await channel()
         do {
             let attributes = try await sftp.getAttributes(at: path)
-            return Self.entry(path: path, name: (path as NSString).lastPathComponent, attributes: attributes)
+            // `stat` already has the full path: it must not be joined again.
+            let modified = attributes.accessModificationTime?.modificationTime
+                .timeIntervalSince1970 ?? 0
+            return RemoteEntry(
+                name: (path as NSString).lastPathComponent,
+                path: path,
+                kind: Self.kind(of: attributes, longname: ""),
+                size: Int64(attributes.size ?? 0),
+                modifiedAt: Int64(max(0, modified))
+            )
         } catch {
             return nil
         }

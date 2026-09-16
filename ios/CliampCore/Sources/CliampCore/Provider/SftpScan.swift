@@ -89,6 +89,7 @@ public struct SftpScan: Sendable {
         var walked = 0
         var lastError: Error?
         for folder in folders {
+            try Task.checkCancellation()
             let root = ((try? await tree.canonicalize(folder)) ?? folder).trimmingTrailingSlashes()
             if !state.visited.insert(root).inserted { continue }
             do {
@@ -96,6 +97,8 @@ public struct SftpScan: Sendable {
                     tree, root: root, directory: root, depth: 0, state: &state
                 )
                 walked += 1
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 lastError = error
             }
@@ -124,6 +127,11 @@ public struct SftpScan: Sendable {
         do {
             entries = try await tree.list(directory)
         } catch {
+            // Cancellation and a broken connection are not "this folder was
+            // unreadable": propagating them is what keeps a cancelled or
+            // refused scan from committing an empty index over a good one.
+            if error is CancellationError || Task.isCancelled { throw CancellationError() }
+            if !Self.isRecoverable(error) { throw error }
             // An unreadable subdirectory is normal (permissions, a stale
             // mount) and is not a reason to abandon the rest of the library.
             // A configured root that cannot be listed is different: report it
@@ -158,6 +166,14 @@ public struct SftpScan: Sendable {
             if !state.visited.insert(canonical).inserted { continue }
             try await walk(tree, root: root, directory: child, depth: depth + 1, state: &state)
         }
+    }
+
+    /// A directory the server refused or that vanished is normal; a refused
+    /// credential, an unreachable host or a bad host key is not.
+    static func isRecoverable(_ error: Error) -> Bool {
+        guard let ssh = error as? SshError else { return true }
+        if case .missing = ssh { return true }
+        return false
     }
 
     private enum Kind {
@@ -211,15 +227,21 @@ public func describe(root: String, path: String, size: Int64 = 0, mtime: Int64 =
     if segments.count >= 2 {
         artist = segments[segments.count - 2].trimmingCharacters(in: .whitespaces)
     } else if segments.count == 1 {
-        let split = albumSource.components(separatedBy: " - ")
-        // `1973 - Dark Side` is a year and an album, not an artist and an
-        // album, and it is punctuated identically. The year split below owns it.
-        let leadsWithYear = Int(split.first?.trimmingCharacters(in: .whitespaces) ?? "") != nil
-        if split.count == 2, !leadsWithYear,
-           !split[0].trimmingCharacters(in: .whitespaces).isEmpty,
-           !split[1].trimmingCharacters(in: .whitespaces).isEmpty {
-            artist = split[0].trimmingCharacters(in: .whitespaces)
-            albumSource = split[1]
+        // Kotlin splits with limit = 2: only the first separator names the
+        // artist, so `Pink Floyd - 1973 - Dark Side` keeps both later parts
+        // for the year pass below.
+        if let separator = albumSource.range(of: " - ") {
+            let first = String(albumSource[..<separator.lowerBound])
+                .trimmingCharacters(in: .whitespaces)
+            let rest = String(albumSource[separator.upperBound...])
+                .trimmingCharacters(in: .whitespaces)
+            // `1973 - Dark Side` is a year and an album, not an artist and an
+            // album, and it is punctuated identically. The year split owns it.
+            let leadsWithYear = Int(first) != nil
+            if !leadsWithYear, !first.isEmpty, !rest.isEmpty {
+                artist = first
+                albumSource = rest
+            }
         }
     }
 
@@ -325,10 +347,13 @@ public func suggestMusicFolders(_ tree: RemoteFileTree) async -> [String] {
 /// offered.
 private func holdsAudio(_ tree: RemoteFileTree, path: String) async -> Bool {
     guard await isDirectory(tree, path: path) else { return false }
-    let top = (try? await tree.list(path)) ?? []
+    // Hidden entries are skipped by the scan, so they must not make a folder
+    // look worth offering (or eat the twelve-directory allowance).
+    let top = ((try? await tree.list(path)) ?? []).filter { !$0.name.hasPrefix(".") }
     if top.contains(where: { $0.kind == .file && isAudio($0.name) }) { return true }
     for child in top.filter({ $0.kind == .directory }).prefix(12) {
-        let inner = (try? await tree.list(child.path)) ?? []
+        let inner = ((try? await tree.list(child.path)) ?? [])
+            .filter { !$0.name.hasPrefix(".") }
         if inner.contains(where: { $0.kind == .file && isAudio($0.name) }) { return true }
     }
     return false
