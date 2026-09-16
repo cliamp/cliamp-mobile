@@ -343,6 +343,36 @@ public struct EmptyNote: View {
     }
 }
 
+/// A fetch that auto-retried and gave up: a note with a manual try again.
+public struct RetryNote: View {
+    @Environment(\.cliampPalette) private var palette
+    private let message: String?
+    private let prominent: Bool
+    private let onRetry: () -> Void
+
+    public init(_ message: String?, prominent: Bool = false, onRetry: @escaping () -> Void) {
+        self.message = message
+        self.prominent = prominent
+        self.onRetry = onRetry
+    }
+
+    public var body: some View {
+        VStack(spacing: 14) {
+            if let message, !message.isEmpty {
+                Text(message)
+                    .cliampText(CliampType.rowSecondary)
+                    .foregroundStyle(palette.destructiveInk)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+            }
+            Chip("try again", selected: false, accent: palette.ink, action: onRetry)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, cliampGutter)
+        .padding(.vertical, prominent ? 96 : 18)
+    }
+}
+
 /// The plate that stands in for missing cover art: flat, hairline bordered.
 public struct ArtPlate: View {
     @Environment(\.cliampPalette) private var palette
