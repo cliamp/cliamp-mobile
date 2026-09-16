@@ -137,6 +137,7 @@ struct NowPlayingScreen: View {
     }
 
     private var statusLabel: String {
+        if player.reconnecting { return "RECONNECTING · \(player.reconnectAttempt)" }
         if player.error != nil { return "STREAM ERROR" }
         if player.buffering { return "BUFFERING" }
         if player.playing { return "ON AIR" }
@@ -144,6 +145,7 @@ struct NowPlayingScreen: View {
     }
 
     private var statusColor: Color {
+        if player.reconnecting { return palette.amber }
         if player.error != nil { return palette.destructiveInk }
         if player.buffering { return palette.amber }
         return player.playing ? palette.accent : palette.inkSecondary
@@ -203,9 +205,10 @@ struct NowPlayingScreen: View {
     }
 
     private var streamingLabel: String {
-        if player.error != nil { return "stream error" }
+        if player.reconnecting { return "reconnecting" }
+        if player.error != nil { return "no signal" }
         if player.buffering { return "buffering" }
         if player.playing { return "streaming" }
-        return "paused"
+        return player.station == nil ? "stopped" : "paused"
     }
 }

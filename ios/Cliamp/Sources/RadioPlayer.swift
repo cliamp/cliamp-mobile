@@ -1,12 +1,14 @@
 import AVFoundation
 import CliampCore
 import Foundation
+import Network
 import Observation
 import os
 
 /// One AVPlayer owns the session, so nothing can ever produce two streams.
 /// The engine is deliberately small until FND-03 picks the final audio stack;
-/// what it proves today is live radio with a real transport.
+/// what it proves today is live radio with a real transport, a reconnect
+/// ladder and the lock screen.
 @MainActor
 @Observable
 final class RadioPlayer {
@@ -21,6 +23,14 @@ final class RadioPlayer {
     private var navigator = RadioNavigator()
     private var navTask: Task<Void, Never>?
     private var system: SystemPlayback?
+    private var policy = ReconnectPolicy()
+    private var retryTask: Task<Void, Never>?
+    private var watchdog: Timer?
+    private var bufferingSinceMs: Int64?
+    private var pathMonitor: NWPathMonitor?
+    /// The user's intent, the iOS counterpart of Android's `playWhenReady`:
+    /// true through buffering and failures until pause.
+    private var playsWhenReady = false
 
     /// The latest 64-band FFT frame from the audio thread, empty when nothing
     /// is flowing. The meters read it; nothing else should.
@@ -33,6 +43,9 @@ final class RadioPlayer {
     private(set) var buffering = false
     private(set) var error: String?
     private(set) var elapsedMs: Int64 = 0
+    /// Amber recovery state: the first attempt starts at 1.
+    private(set) var reconnecting = false
+    private(set) var reconnectAttempt = 0
 
     /// Called on every user-initiated play so history and the last station
     /// reach persistence at one choke point (RAD-12).
@@ -54,6 +67,8 @@ final class RadioPlayer {
             }
         }
         system = SystemPlayback(player: self)
+        startWatchdog()
+        startNetworkMonitor()
     }
 
     func play(_ station: Station) {
@@ -65,13 +80,13 @@ final class RadioPlayer {
 
     private func begin(_ station: Station) {
         configureSessionIfNeeded()
+        cancelRecovery()
         self.station = station
         error = nil
         elapsedMs = 0
         bufferedSeconds = 0
         streamTitle = ""
-        icy.stop()
-        spectrum.clear()
+        playsWhenReady = true
         guard let url = URL(string: station.url) else {
             error = "couldn't play that stream"
             updateNavigationAvailability()
@@ -82,6 +97,15 @@ final class RadioPlayer {
         navigator.recordPlay(station)
         updateNavigationAvailability()
         system?.refresh()
+        startStream(station: station, url: url)
+    }
+
+    /// Builds a fresh item for [station] and plays it: the one path that ever
+    /// touches AVPlayer, used by explicit plays, navigation and reconnects.
+    private func startStream(station: Station, url: URL) {
+        icy.stop()
+        spectrum.clear()
+        bufferingSinceMs = nil
         let item = AVPlayerItem(url: url)
         // A post-effects tap gives the meters the PCM that is actually
         // playing, for the real FFT. If the tap cannot attach, the meter
@@ -105,13 +129,11 @@ final class RadioPlayer {
             let message = item.error?.localizedDescription
             let error = item.error as NSError?
             Task { @MainActor [weak self] in
-                guard let self, status == .failed else { return }
+                guard let self, status == .failed, let error else { return }
                 self.errorLog.error(
-                    "item failed code=\(error?.code ?? 0, privacy: .public) domain=\(error?.domain ?? "-", privacy: .public) underlying=\(String(describing: error?.userInfo[NSUnderlyingErrorKey]), privacy: .public)"
+                    "item failed code=\(error.code, privacy: .public) domain=\(error.domain, privacy: .public) underlying=\(String(describing: error.userInfo[NSUnderlyingErrorKey]), privacy: .public)"
                 )
-                self.error = message ?? "couldn't play that stream"
-                self.playing = false
-                self.system?.refresh()
+                self.handleStreamFailure(error, message: message)
             }
         }
         player.replaceCurrentItem(with: item)
@@ -122,6 +144,19 @@ final class RadioPlayer {
                 self?.system?.refresh()
             }
         }
+    }
+
+    /// A failed item either enters the backoff ladder or surfaces a stable
+    /// error: malformed containers and unsupported codecs are not retried.
+    private func handleStreamFailure(_ failure: NSError, message: String?) {
+        if playsWhenReady, ReconnectPolicy.isRecoverable(failure) {
+            scheduleRetry(reason: "error \(failure.code)")
+            return
+        }
+        error = message ?? "couldn't play that stream"
+        playing = false
+        cancelRecovery()
+        system?.refresh()
     }
 
     /// Shows the last station without making a sound, matching the Android
@@ -199,17 +234,24 @@ final class RadioPlayer {
     /// An explicit pause: the lock screen and interruptions land here too.
     func pause() {
         guard station != nil else { return }
+        playsWhenReady = false
         player.pause()
         icy.stop()
+        cancelRecovery()
         system?.refresh()
     }
 
-    /// Resumes the loaded item; never builds a second player.
+    /// Resumes the loaded item, rebuilding it only when the last one failed.
     func resume() {
         guard station != nil else { return }
         error = nil
-        player.play()
-        resumeMetadata()
+        playsWhenReady = true
+        if player.currentItem?.status == .failed, let station, let url = URL(string: station.url) {
+            startStream(station: station, url: url)
+        } else {
+            player.play()
+            resumeMetadata()
+        }
         system?.refresh()
     }
 
@@ -226,8 +268,107 @@ final class RadioPlayer {
     private func apply(_ status: AVPlayer.TimeControlStatus) {
         buffering = status == .waitingToPlayAtSpecifiedRate
         playing = status == .playing
+        if buffering {
+            if bufferingSinceMs == nil { bufferingSinceMs = nowMs() }
+        } else {
+            bufferingSinceMs = nil
+        }
+        if playing {
+            // A stream that actually delivers audio resets the ladder.
+            finishRecovery()
+        }
         updateTicker()
         system?.refresh()
+    }
+
+    // MARK: reconnect
+
+    /// Waits out the backoff ladder, then rebuilds the stream. Pausing,
+    /// network return and a fresh play all cancel it first.
+    private func scheduleRetry(reason: String) {
+        guard retryTask == nil, station != nil else { return }
+        let waitMs = policy.scheduleRetry()
+        reconnectAttempt = policy.attempt
+        reconnecting = true
+        error = nil
+        errorLog.info("reconnect #\(self.reconnectAttempt, privacy: .public) in \(waitMs)ms (\(reason, privacy: .public))")
+        system?.refresh()
+        retryTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(waitMs))
+            guard !Task.isCancelled, let self else { return }
+            self.retryTask = nil
+            guard self.playsWhenReady, let station = self.station,
+                  let url = URL(string: station.url)
+            else {
+                self.finishRecovery()
+                return
+            }
+            self.startStream(station: station, url: url)
+        }
+    }
+
+    /// The 20-second stall watchdog: a stream that stops delivering without
+    /// any error looks identical to a slow buffer until the timeout.
+    private func startWatchdog() {
+        guard watchdog == nil else { return }
+        let interval = Double(ReconnectPolicy.watchdogIntervalMs) / 1000
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.checkStall()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        watchdog = timer
+    }
+
+    private func checkStall() {
+        guard playsWhenReady, !reconnecting, error == nil else { return }
+        guard player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
+              let since = bufferingSinceMs
+        else { return }
+        guard ReconnectPolicy.isStalled(bufferingSinceMs: since, nowMs: nowMs()) else { return }
+        bufferingSinceMs = nil
+        scheduleRetry(reason: "stalled with no error")
+    }
+
+    /// Coming back into signal retries now instead of waiting out the ladder.
+    private func startNetworkMonitor() {
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            guard path.status == .satisfied else { return }
+            Task { @MainActor [weak self] in
+                self?.networkReturned()
+            }
+        }
+        monitor.start(queue: DispatchQueue(label: "stream.cliamp.mobile.network"))
+        pathMonitor = monitor
+    }
+
+    private func networkReturned() {
+        guard playsWhenReady, station != nil else { return }
+        let failed = player.currentItem?.status == .failed
+        guard reconnecting || failed else { return }
+        retryTask?.cancel()
+        retryTask = nil
+        policy.reset()
+        reconnectAttempt = 0
+        reconnecting = false
+        error = nil
+        system?.refresh()
+        guard let station, let url = URL(string: station.url) else { return }
+        startStream(station: station, url: url)
+    }
+
+    private func cancelRecovery() {
+        retryTask?.cancel()
+        retryTask = nil
+        finishRecovery()
+    }
+
+    private func finishRecovery() {
+        policy.reset()
+        reconnecting = false
+        reconnectAttempt = 0
     }
 
     private func updateTicker() {

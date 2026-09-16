@@ -177,6 +177,7 @@ struct MiniPlayerBar: View {
 
     private var statusLine: String {
         guard let station = player.station else { return "pick a station to start" }
+        if player.reconnecting { return "reconnecting…" }
         if let error = player.error { return error }
         if player.buffering { return "buffering…" }
         if !player.streamTitle.isEmpty { return player.streamTitle }
@@ -184,7 +185,7 @@ struct MiniPlayerBar: View {
     }
 
     private var statusColor: Color {
-        player.buffering ? palette.amber : palette.inkTertiary
+        player.reconnecting || player.buffering ? palette.amber : palette.inkTertiary
     }
 
     private func miniKey(
