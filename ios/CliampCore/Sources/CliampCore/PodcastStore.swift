@@ -17,6 +17,7 @@ public final class PodcastStore: @unchecked Sendable {
     private let progressFile: URL
     private let downloadsFile: URL
     private let feedsDirectory: URL
+    private let snapshotsDirectory: URL
 
     public init(root: URL) {
         self.root = root
@@ -24,7 +25,9 @@ public final class PodcastStore: @unchecked Sendable {
         progressFile = root.appendingPathComponent("progress.json")
         downloadsFile = root.appendingPathComponent("downloads.json")
         feedsDirectory = root.appendingPathComponent("feeds", isDirectory: true)
+        snapshotsDirectory = root.appendingPathComponent("directory", isDirectory: true)
         try? FileManager.default.createDirectory(at: feedsDirectory, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: snapshotsDirectory, withIntermediateDirectories: true)
     }
 
     public static func applicationDefault() -> PodcastStore {
@@ -110,6 +113,18 @@ public final class PodcastStore: @unchecked Sendable {
         return out
     }
 
+    // MARK: directory snapshot
+
+    /// The last first page of a directory query, so a reopened tab paints
+    /// instantly while the network answers.
+    public func directorySnapshot(key: String) -> [PodcastShow]? {
+        lock.withLock { decode([PodcastShow].self, from: snapshotFile(key)) }
+    }
+
+    public func saveDirectorySnapshot(_ shows: [PodcastShow], key: String) {
+        lock.withLock { save(shows, to: snapshotFile(key)) }
+    }
+
     // MARK: progress
 
     /// Every saved position, keyed by episode URL, for badging a list at once.
@@ -163,6 +178,10 @@ public final class PodcastStore: @unchecked Sendable {
 
     private func feedFile(_ feedUrl: String) -> URL {
         feedsDirectory.appendingPathComponent("\(Self.stableName(feedUrl)).json")
+    }
+
+    private func snapshotFile(_ key: String) -> URL {
+        snapshotsDirectory.appendingPathComponent("\(Self.stableName(key)).json")
     }
 
     /// A deterministic file name for a feed URL, filesystem-safe on every OS.

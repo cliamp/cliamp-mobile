@@ -50,6 +50,13 @@ final class RadioPlayer {
     /// True while a playlist hop is in flight; the loaded item still belongs
     /// to the previous selection until it completes.
     private var resolving = false
+    /// Saved episode position to seek to once the item is ready.
+    private var pendingStartMs: Int64 = 0
+    private var lastProgressWriteMs: Int64 = 0
+    private var endObserver: NSObjectProtocol?
+
+    /// How often a playing track's position reaches the podcast store.
+    private static let progressIntervalMs: Int64 = 5_000
 
     /// The latest 64-band FFT frame from the audio thread, empty when nothing
     /// is flowing. The meters read it; nothing else should.
@@ -86,6 +93,15 @@ final class RadioPlayer {
     /// The speed choice is persisted by the app state, the same split as
     /// history and favourites.
     var onSpeedChange: ((Double) -> Void)?
+
+    /// Where a track should start (saved episode position), and where its
+    /// progress goes. Both are wired to the podcast store; radio ignores them.
+    var resumeProvider: ((Station) -> Int64)?
+    var progressSink: ((Station, Int64, Int64) -> Void)?
+
+    /// A downloaded episode's local path, preferred over the network when the
+    /// same remote URL has a file on disk.
+    var downloadLookup: ((String) -> String?)?
 
     private(set) var hasPrev = false
     private(set) var hasNext = false
@@ -134,6 +150,8 @@ final class RadioPlayer {
     private func begin(_ station: Station) {
         configureSessionIfNeeded()
         cancelRecovery()
+        // A finished track's position is committed before the next one starts.
+        saveProgressIfNeeded(force: true)
         self.station = station
         error = nil
         elapsedMs = 0
@@ -141,6 +159,8 @@ final class RadioPlayer {
         streamTitle = ""
         wantsToPlay = true
         resumeAfterInterruption = false
+        pendingStartMs = resumeProvider?(station) ?? 0
+        lastProgressWriteMs = nowMs()
         guard let url = URL(string: station.url) else {
             error = "couldn't play that stream"
             updateNavigationAvailability()
@@ -161,6 +181,14 @@ final class RadioPlayer {
     /// URLs pass through untouched. While it resolves, the player reports
     /// buffering so the transport is honest about the wait.
     private func resolveStream(station: Station, url: URL, generation: Int) {
+        // A downloaded episode plays from disk, same identity everywhere.
+        if let local = downloadLookup?(station.url) {
+            errorLog.info("playing downloaded file \(local, privacy: .public)")
+            streamURL = URL(fileURLWithPath: local)
+            buffering = false
+            startStream(station: station, url: URL(fileURLWithPath: local), generation: generation)
+            return
+        }
         buffering = true
         resolving = true
         resolveTask?.cancel()
@@ -204,11 +232,11 @@ final class RadioPlayer {
             item.audioMix = mix
             tap = spectrumTap
         }
+        let identity = ObjectIdentifier(item)
         itemStatusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
             let status = item.status
             let message = item.error?.localizedDescription
             let error = item.error as NSError?
-            let identity = ObjectIdentifier(item)
             Task { @MainActor [weak self] in
                 guard let self, generation == self.playGeneration,
                       let current = self.player.currentItem,
@@ -222,7 +250,28 @@ final class RadioPlayer {
                 } else {
                     // Duration and seekable ranges arrive with readiness.
                     self.refreshCapabilities()
+                    // An episode resumes where it stopped, once it can seek.
+                    if status == .readyToPlay, self.pendingStartMs > 0 {
+                        let position = self.pendingStartMs
+                        self.pendingStartMs = 0
+                        self.player.currentItem?.seek(
+                            to: CMTime(value: CMTimeValue(position), timescale: 1000),
+                            toleranceBefore: .zero,
+                            toleranceAfter: .zero,
+                            completionHandler: nil
+                        )
+                    }
                 }
+            }
+        }
+        if let endObserver {
+            NotificationCenter.default.removeObserver(endObserver)
+        }
+        endObserver = NotificationCenter.default.addObserver(
+            forName: AVPlayerItem.didPlayToEndTimeNotification, object: item, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleItemEnd(identity: identity)
             }
         }
         player.replaceCurrentItem(with: item)
@@ -367,6 +416,7 @@ final class RadioPlayer {
         wantsToPlay = false
         resumeAfterInterruption = false
         player.pause()
+        saveProgressIfNeeded(force: true)
         icy.stop()
         navigator.cancelPending()
         navTask?.cancel()
@@ -455,6 +505,36 @@ final class RadioPlayer {
         guard durationMs > 0 else { return }
         let clamped = min(max(fraction, 0), 1)
         seek(toPositionMs: Int64(clamped * Double(durationMs)))
+    }
+
+    // MARK: progress
+
+    /// A finite item reached its end: commit the completion and advance, or
+    /// stop at the end of the queue. Live radio never fires this.
+    private func handleItemEnd(identity: ObjectIdentifier) {
+        guard let current = player.currentItem, ObjectIdentifier(current) == identity,
+              let station, station.isTrack
+        else { return }
+        let duration = durationMs > 0 ? durationMs : station.durationMs
+        progressSink?(station, duration, duration)
+        if hasNext {
+            goNext()
+        } else {
+            wantsToPlay = false
+            playing = false
+            icy.stop()
+            system?.refresh()
+        }
+    }
+
+    /// Commits the audible position on the podcast cadence: every five
+    /// seconds while playing, and immediately on pause or track change.
+    private func saveProgressIfNeeded(force: Bool) {
+        guard let station, station.isTrack, elapsedMs > 0 else { return }
+        let now = nowMs()
+        guard force || now - lastProgressWriteMs >= Self.progressIntervalMs else { return }
+        lastProgressWriteMs = now
+        progressSink?(station, elapsedMs, durationMs > 0 ? durationMs : station.durationMs)
     }
 
     /// Applies a speed without persisting: the launch restore from the stored
@@ -622,6 +702,7 @@ final class RadioPlayer {
                     guard let self else { return }
                     self.syncPosition()
                     self.refreshCapabilities()
+                    self.saveProgressIfNeeded(force: false)
                 }
             }
             RunLoop.main.add(timer, forMode: .common)

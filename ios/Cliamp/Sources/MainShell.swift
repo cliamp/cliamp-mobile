@@ -12,6 +12,7 @@ struct MainShell: View {
     let app: AppState
     let onOpenSettings: () -> Void
     let onOpenPlayer: () -> Void
+    let onOpenPodcast: (PodcastShow) -> Void
 
     var body: some View {
         GeometryReader { proxy in
@@ -41,7 +42,14 @@ struct MainShell: View {
         case .stations:
             StationsScreen(player: player, app: app, onOpenSettings: onOpenSettings)
         case .pods:
-            PlaceholderTab(title: "Podcasts")
+            PodcastsScreen(
+                player: player,
+                app: app,
+                podcasts: PodcastServices.shared.podcasts,
+                downloads: PodcastServices.shared.downloads,
+                onOpenSettings: onOpenSettings,
+                onOpenShow: onOpenPodcast
+            )
         case .library:
             PlaceholderTab(title: "Library")
         }

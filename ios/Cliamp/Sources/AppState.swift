@@ -18,6 +18,8 @@ final class AppState {
     var resumeLocalSongs: Bool { didSet { defaults.set(resumeLocalSongs, forKey: Keys.resumeLocal) } }
     var autoDownload: Bool { didSet { defaults.set(autoDownload, forKey: Keys.autoDownload) } }
     var speed: Double { didSet { defaults.set(speed, forKey: Keys.speed) } }
+    var subsGrid: Bool { didSet { defaults.set(subsGrid, forKey: Keys.subsGrid) } }
+    var podcastDirectoryGrid: Bool { didSet { defaults.set(podcastDirectoryGrid, forKey: Keys.podcastDirectoryGrid) } }
 
     private(set) var favoriteURLs: Set<String> = []
     /// Newest first; the full stations, not just URLs, so the cold-launch
@@ -42,6 +44,8 @@ final class AppState {
         static let resumeLocal = "resume_local_songs"
         static let autoDownload = "auto_download"
         static let speed = "speed"
+        static let subsGrid = "subs_grid"
+        static let podcastDirectoryGrid = "pod_directory_grid"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -57,6 +61,8 @@ final class AppState {
         resumeLocalSongs = defaults.bool(forKey: Keys.resumeLocal)
         autoDownload = defaults.bool(forKey: Keys.autoDownload)
         speed = PlaybackSpeed.clamped(defaults.object(forKey: Keys.speed) as? Double ?? 1)
+        subsGrid = defaults.object(forKey: Keys.subsGrid) as? Bool ?? true
+        podcastDirectoryGrid = defaults.object(forKey: Keys.podcastDirectoryGrid) as? Bool ?? true
         favorites = library.favorites()
         favoriteURLs = Set(favorites.map(\.url))
         history = library.history()
