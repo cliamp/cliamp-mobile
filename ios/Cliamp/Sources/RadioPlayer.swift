@@ -18,6 +18,8 @@ final class RadioPlayer {
     private var tap: SpectrumTap?
     private var ticker: Timer?
     private var sessionConfigured = false
+    private var navigator = RadioNavigator()
+    private var navTask: Task<Void, Never>?
 
     /// The latest 64-band FFT frame from the audio thread, empty when nothing
     /// is flowing. The meters read it; nothing else should.
@@ -35,6 +37,14 @@ final class RadioPlayer {
     /// reach persistence at one choke point (RAD-12).
     var onRecordPlay: ((Station) -> Void)?
 
+    /// Where prev/next walk when no explicit source list exists: recent
+    /// history, or favourites when history is empty. Read live so a new
+    /// favourite is navigable without a copy going stale.
+    var fallbackProvider: (() -> [Station])?
+
+    private(set) var hasPrev = false
+    private(set) var hasNext = false
+
     init() {
         timeControlObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
             let status = player.timeControlStatus
@@ -45,6 +55,13 @@ final class RadioPlayer {
     }
 
     func play(_ station: Station) {
+        navigator.cancelPending()
+        navTask?.cancel()
+        navTask = nil
+        begin(station)
+    }
+
+    private func begin(_ station: Station) {
         configureSessionIfNeeded()
         self.station = station
         error = nil
@@ -55,9 +72,12 @@ final class RadioPlayer {
         spectrum.clear()
         guard let url = URL(string: station.url) else {
             error = "couldn't play that stream"
+            updateNavigationAvailability()
             return
         }
         onRecordPlay?(station)
+        navigator.recordPlay(station)
+        updateNavigationAvailability()
         let item = AVPlayerItem(url: url)
         // A post-effects tap gives the meters the PCM that is actually
         // playing, for the real FFT. If the tap cannot attach, the meter
@@ -104,6 +124,62 @@ final class RadioPlayer {
     func restore(_ station: Station) {
         guard self.station == nil else { return }
         self.station = station
+        updateNavigationAvailability()
+    }
+
+    /// Steps forward: the redo tail first, then the fallback ring. An isolated
+    /// tap lands immediately; a burst settles on the final target.
+    func goNext() {
+        let stations = fallback()
+        guard !stations.isEmpty else { return }
+        switch navigator.next(stations: stations, current: station, nowMs: nowMs()) {
+        case .play(let target): begin(target)
+        case .schedule: schedulePending()
+        case .ignore: break
+        }
+    }
+
+    /// Steps back through what was heard this session, then the ring.
+    func goPrevious() {
+        let stations = fallback()
+        guard !stations.isEmpty else { return }
+        switch navigator.previous(stations: stations, current: station, nowMs: nowMs()) {
+        case .play(let target): begin(target)
+        case .schedule: schedulePending()
+        case .ignore: break
+        }
+    }
+
+    /// The fallback list changed (a new favourite, a play recorded): recompute
+    /// whether the transport keys can go anywhere.
+    func refreshNavigation() {
+        updateNavigationAvailability()
+    }
+
+    private func schedulePending() {
+        navTask?.cancel()
+        navTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(Int(RadioNavigator.debounceWindowMs)))
+            guard !Task.isCancelled, let self else { return }
+            self.navTask = nil
+            guard let target = self.navigator.takePending(stations: self.fallback()) else { return }
+            self.begin(target)
+        }
+    }
+
+    private func updateNavigationAvailability() {
+        let ring = fallback().count > 1
+        hasPrev = ring || navigator.canGoBack
+        hasNext = ring || navigator.canGoForward
+    }
+
+    private func fallback() -> [Station] {
+        fallbackProvider?() ?? []
+    }
+
+    /// Monotonic milliseconds, the iOS counterpart of Android's uptimeMillis.
+    private func nowMs() -> Int64 {
+        Int64(DispatchTime.now().uptimeNanoseconds / 1_000_000)
     }
 
     func toggle() {

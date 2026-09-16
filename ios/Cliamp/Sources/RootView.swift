@@ -22,6 +22,9 @@ struct RootView: View {
         )
         .cliampTheme(palette)
         .environment(\.cliampHapticsEnabled, app.haptics)
+        .onChange(of: app.fallbackStations) { _, _ in
+            player.refreshNavigation()
+        }
         .fullScreenCover(isPresented: $showSettings) {
             SettingsScreen(app: app, onBack: { showSettings = false })
                 .cliampTheme(palette)
@@ -34,6 +37,7 @@ struct RootView: View {
         }
         .task {
             player.onRecordPlay = { [app] station in app.recordPlay(station) }
+            player.fallbackProvider = { [app] in app.fallbackStations }
             // Android restores the last station to the bus but never plays it
             // unless auto-resume is on: a radio app that starts making noise
             // on launch is a bad neighbour (RAD-12).

@@ -105,7 +105,9 @@ struct MiniPlayerBar: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 HStack(spacing: 6) {
-                    miniKey(CliampIcons.prev, label: "previous", enabled: false) {}
+                    miniKey(CliampIcons.prev, label: "previous", enabled: player.hasPrev) {
+                        player.goPrevious()
+                    }
                     Button {
                         player.toggle()
                     } label: {
@@ -120,7 +122,9 @@ struct MiniPlayerBar: View {
                     }
                     .buttonStyle(MicroPressStyle())
                     .disabled(player.station == nil)
-                    miniKey(CliampIcons.next, label: "next", enabled: false) {}
+                    miniKey(CliampIcons.next, label: "next", enabled: player.hasNext) {
+                        player.goNext()
+                    }
                 }
             }
             .padding(.horizontal, cliampGutter)

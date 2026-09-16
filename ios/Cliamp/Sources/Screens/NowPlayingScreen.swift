@@ -179,7 +179,7 @@ struct NowPlayingScreen: View {
                 let spacing = 9.0
                 let available = max(0, proxy.size.width - spacing * 2)
                 HStack(spacing: spacing) {
-                    MechKey(enabled: false, action: {}) {
+                    MechKey(enabled: player.hasPrev, action: { player.goPrevious() }) {
                         CliampIcon(CliampIcons.prev, width: 21, height: 17, tint: palette.ink)
                     }
                     .frame(width: available / 3.7)
@@ -192,7 +192,7 @@ struct NowPlayingScreen: View {
                         )
                     }
                     .frame(width: available * 1.7 / 3.7)
-                    MechKey(enabled: false, action: {}) {
+                    MechKey(enabled: player.hasNext, action: { player.goNext() }) {
                         CliampIcon(CliampIcons.next, width: 21, height: 17, tint: palette.ink)
                     }
                     .frame(width: available / 3.7)
