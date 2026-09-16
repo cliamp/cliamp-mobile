@@ -127,8 +127,13 @@ struct MiniPlayerBar: View {
             .onTapGesture(perform: onOpen)
         }
         .background(palette.panel)
-        .onAppear { meter.start() }
+        .onAppear {
+            if app.visualizer != "off" { meter.start() }
+        }
         .onDisappear { meter.stop() }
+        .onChange(of: app.visualizer) { _, value in
+            if value == "off" { meter.stop() } else { meter.start() }
+        }
     }
 
     private var art: some View {

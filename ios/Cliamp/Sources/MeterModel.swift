@@ -46,7 +46,7 @@ final class MeterModel {
         let playing = player.playing
         if playing {
             if !wasPlaying { idleStart = CACurrentMediaTime() }
-            if let real = player.spectrum.latest(), !real.isEmpty {
+            if let real = player.spectrum.latestBands(), !real.isEmpty {
                 core.push(real)
             } else {
                 core.pushIdle(t: CACurrentMediaTime() - idleStart)

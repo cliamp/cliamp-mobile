@@ -88,9 +88,26 @@ public enum SpectrumBands {
         dynamicRangeDb: Float
     ) -> [Float] {
         guard bands > 0 else { return [] }
-        let bins = magnitudes.count
         var out = [Float](repeating: 0, count: bands)
-        guard bins >= 4 else { return out }
+        out.withUnsafeMutableBufferPointer { buffer in
+            fold(magnitudes: magnitudes, bands: bands, scale: scale, dynamicRangeDb: dynamicRangeDb, into: buffer)
+        }
+        return out
+    }
+
+    /// The allocation-free form used by the audio thread; `output` must hold
+    /// exactly `bands` elements.
+    public static func fold(
+        magnitudes: [Float],
+        bands: Int,
+        scale: Float,
+        dynamicRangeDb: Float,
+        into output: UnsafeMutableBufferPointer<Float>
+    ) {
+        output.update(repeating: 0)
+        guard bands > 0, output.count >= bands else { return }
+        let bins = magnitudes.count
+        guard bins >= 4 else { return }
         var low = 1
         for bandIndex in 0..<bands {
             let hi = Int(pow(Double(bins), Double(bandIndex + 1) / Double(bands)))
@@ -101,9 +118,8 @@ public enum SpectrumBands {
             }
             let normalized = min(max(peak * scale, 1e-4), 1)
             let db = 20 * log10(normalized)
-            out[bandIndex] = min(max((db + dynamicRangeDb) / dynamicRangeDb, 0), 1)
+            output[bandIndex] = min(max((db + dynamicRangeDb) / dynamicRangeDb, 0), 1)
             low = high
         }
-        return out
     }
 }

@@ -40,8 +40,14 @@ struct NowPlayingScreen: View {
             }
         }
         .background(palette.ground)
-        .onAppear { meter.start() }
+        .onAppear {
+            if app.visualizer != "off" { meter.start() }
+        }
         .onDisappear { meter.stop() }
+        .onChange(of: app.visualizer) { _, value in
+            // spectrum/off removes the rendering work, not just the view.
+            if value == "off" { meter.stop() } else { meter.start() }
+        }
     }
 
     private var topRow: some View {
