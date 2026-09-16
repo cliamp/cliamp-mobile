@@ -184,8 +184,11 @@ final class RadioPlayer {
         // A downloaded episode plays from disk, same identity everywhere.
         if let local = downloadLookup?(station.url) {
             errorLog.info("playing downloaded file \(local, privacy: .public)")
-            streamURL = URL(fileURLWithPath: local)
+            resolveTask?.cancel()
+            resolveTask = nil
+            resolving = false
             buffering = false
+            streamURL = URL(fileURLWithPath: local)
             startStream(station: station, url: URL(fileURLWithPath: local), generation: generation)
             return
         }
@@ -271,7 +274,7 @@ final class RadioPlayer {
             forName: AVPlayerItem.didPlayToEndTimeNotification, object: item, queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.handleItemEnd(identity: identity)
+                self?.handleItemEnd(identity: identity, generation: generation)
             }
         }
         player.replaceCurrentItem(with: item)
@@ -456,9 +459,12 @@ final class RadioPlayer {
         if let current = player.currentItem, current.status != .failed {
             player.play()
             resumeMetadata()
-        } else if let station, let url = streamURL ?? URL(string: station.url) {
+        } else if let station, let url = URL(string: station.url) {
             configureSessionIfNeeded()
-            startStream(station: station, url: url, generation: playGeneration)
+            // A restored station has no item yet: go through resolution so the
+            // saved position and any downloaded file are honoured.
+            pendingStartMs = resumeProvider?(station) ?? pendingStartMs
+            resolveStream(station: station, url: url, generation: playGeneration)
         }
         system?.refresh()
     }
@@ -511,8 +517,9 @@ final class RadioPlayer {
 
     /// A finite item reached its end: commit the completion and advance, or
     /// stop at the end of the queue. Live radio never fires this.
-    private func handleItemEnd(identity: ObjectIdentifier) {
-        guard let current = player.currentItem, ObjectIdentifier(current) == identity,
+    private func handleItemEnd(identity: ObjectIdentifier, generation: Int) {
+        guard generation == playGeneration,
+              let current = player.currentItem, ObjectIdentifier(current) == identity,
               let station, station.isTrack
         else { return }
         let duration = durationMs > 0 ? durationMs : station.durationMs
@@ -595,6 +602,10 @@ final class RadioPlayer {
                 self.finishRecovery()
                 return
             }
+            // A replacement item starts at zero; keep the audible position.
+            if station.isTrack, self.elapsedMs > 0 {
+                self.pendingStartMs = self.elapsedMs
+            }
             self.startStream(station: station, url: url, generation: self.playGeneration)
         }
     }
@@ -650,6 +661,9 @@ final class RadioPlayer {
         error = nil
         system?.refresh()
         guard let station, let url = streamURL ?? URL(string: station.url) else { return }
+        if station.isTrack, elapsedMs > 0 {
+            pendingStartMs = elapsedMs
+        }
         startStream(station: station, url: url, generation: playGeneration)
     }
 

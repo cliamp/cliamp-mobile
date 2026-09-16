@@ -63,6 +63,10 @@ final class PodcastsModel {
     /// Bumped by every reset so a slow page from an older query cannot write
     /// into the newer one's state.
     private var generation = 0
+    /// Single-flight guard for append pages (resets carry tokens instead).
+    private var pageInFlight = false
+    /// Every open invalidates the previous show's in-flight feed fetch.
+    private var showGeneration = 0
 
     init(
         store: PodcastStore = .applicationDefault(),
@@ -113,6 +117,13 @@ final class PodcastsModel {
 
     private func loadPage(_ query: Query, reset: Bool, token: Int) async {
         if !reset, loading || exhausted || error != nil { return }
+        // Only one append may resolve a cursor slice at a time; a reset may
+        // still preempt it, and its token check drops the stale writes.
+        if !reset {
+            guard !pageInFlight else { return }
+            pageInFlight = true
+        }
+        defer { if !reset { pageInFlight = false } }
         if reset {
             self.query = query
             loading = true
@@ -157,6 +168,7 @@ final class PodcastsModel {
                     pending = results
                 }
             } catch {
+                guard token == generation else { return }
                 loading = false
                 // A snapshot already on screen is better than an error.
                 if shows.isEmpty {
@@ -195,6 +207,7 @@ final class PodcastsModel {
                 store.saveDirectorySnapshot(shows, key: query.key)
             }
         } catch {
+            guard token == generation else { return }
             loading = false
             self.error = error.localizedDescription
         }
@@ -211,6 +224,11 @@ final class PodcastsModel {
     func toggleSubscription(_ show: PodcastShow) -> Bool {
         let subscribed = store.toggleSubscription(show)
         reloadLibrary()
+        // Subscribing to a show already in hand makes its latest episodes
+        // eligible immediately, without waiting for another feed refresh.
+        if subscribed, self.show?.feedUrl == show.feedUrl, !episodes.isEmpty {
+            downloads?.autoDownload(show: show, episodes: episodes, completedUrls: completedURLs)
+        }
         return subscribed
     }
 
@@ -223,17 +241,23 @@ final class PodcastsModel {
         if !force, self.show?.feedUrl == show.feedUrl, !episodes.isEmpty, !showLoading {
             return
         }
+        showGeneration += 1
+        let token = showGeneration
         self.show = show
         episodes = []
         showLoading = true
         showError = nil
         Task {
-            if let cached = store.freshFeed(feedUrl: show.feedUrl), episodes.isEmpty {
+            if let cached = store.freshFeed(feedUrl: show.feedUrl) {
+                guard token == showGeneration, episodes.isEmpty else { return }
                 self.show = cached.show
                 episodes = cached.episodes
             }
             do {
                 let loaded = try await PodcastFeed.load(show: show, transport: feedTransport)
+                // A late feed for a show the user already left must not
+                // replace the current one.
+                guard token == showGeneration else { return }
                 self.show = loaded.show
                 episodes = loaded.episodes
                 showLoading = false
@@ -243,13 +267,14 @@ final class PodcastsModel {
                 if store.isSubscribed(feedUrl: loaded.show.feedUrl) {
                     store.updateSubscription(loaded.show)
                     reloadLibrary()
+                    downloads?.autoDownload(
+                        show: loaded.show,
+                        episodes: loaded.episodes,
+                        completedUrls: completedURLs
+                    )
                 }
-                downloads?.autoDownload(
-                    show: loaded.show,
-                    episodes: loaded.episodes,
-                    completedUrls: completedURLs
-                )
             } catch {
+                guard token == showGeneration else { return }
                 showLoading = false
                 if episodes.isEmpty {
                     showError = error.localizedDescription

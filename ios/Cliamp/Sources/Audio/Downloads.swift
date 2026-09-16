@@ -34,6 +34,14 @@ final class DownloadManager {
     private(set) var states: [String: DownloadState] = [:]
     private(set) var entries: [String: DownloadEntry] = [:]
 
+    /// One in-flight fetch. The task's identifier travels with every callback
+    /// so a late completion from a cancelled task cannot touch its successor.
+    private struct ActiveDownload {
+        let task: URLSessionDownloadTask
+        let station: Station
+        let auto: Bool
+    }
+
     private let store: PodcastStore
     private let directory: URL
     private let allowsCellular: @Sendable () -> Bool
@@ -41,9 +49,10 @@ final class DownloadManager {
     private let coordinator = DownloadCoordinator()
     private let log = Logger(subsystem: "stream.cliamp.mobile", category: "downloads")
     private let monitor = NWPathMonitor()
-    private var activeTasks: [String: URLSessionDownloadTask] = [:]
-    private var activeStations: [String: Station] = [:]
-    private var pathIsExpensive = false
+    private var active: [String: ActiveDownload] = [:]
+    /// Unknown until the first path update; treating that as expensive keeps
+    /// a just-launched app from spending cellular before it knows better.
+    private var pathIsExpensive = true
 
     /// Auto-download keeps this many latest episodes per subscribed show.
     private let autoKeep = 3
@@ -65,14 +74,14 @@ final class DownloadManager {
             }
         }
         monitor.start(queue: DispatchQueue(label: "stream.cliamp.mobile.downloads"))
-        coordinator.onProgress = { [weak self] url, read, total in
+        coordinator.onProgress = { [weak self] taskID, url, read, total in
             Task { @MainActor [weak self] in
-                self?.updateProgress(url: url, read: read, total: total)
+                self?.updateProgress(taskID: taskID, url: url, read: read, total: total)
             }
         }
-        coordinator.onFinish = { [weak self] url, file, failure in
+        coordinator.onFinish = { [weak self] taskID, url, file, failure in
             Task { @MainActor [weak self] in
-                self?.finish(url: url, file: file, failure: failure)
+                self?.finish(taskID: taskID, url: url, file: file, failure: failure)
             }
         }
     }
@@ -100,7 +109,7 @@ final class DownloadManager {
     /// Queue a fetch; a no-op when already held or already running.
     func download(_ station: Station, auto: Bool = false) {
         let url = station.url
-        guard !isDownloaded(url: url), activeTasks[url] == nil else { return }
+        guard !isDownloaded(url: url), active[url] == nil else { return }
         guard station.isTrack, url.hasPrefix("http://") || url.hasPrefix("https://"),
               let taskURL = URL(string: url)
         else {
@@ -111,18 +120,19 @@ final class DownloadManager {
             states[url] = .failed("wifi only")
             return
         }
+        var request = URLRequest(url: taskURL)
+        request.allowsCellularAccess = allowsCellular()
         let destination = fileURL(for: url)
-        let task = session.downloadTask(with: taskURL)
+        let task = session.downloadTask(with: request)
         coordinator.register(task: task, url: url, destination: destination)
-        activeTasks[url] = task
-        activeStations[url] = station
+        active[url] = ActiveDownload(task: task, station: station, auto: auto)
         states[url] = .active(fraction: 0, bytesRead: 0, totalBytes: -1)
         task.resume()
     }
 
     func cancel(url: String) {
-        activeTasks.removeValue(forKey: url)?.cancel()
-        activeStations[url] = nil
+        guard let running = active.removeValue(forKey: url) else { return }
+        running.task.cancel()
         states[url] = nil
     }
 
@@ -146,7 +156,7 @@ final class DownloadManager {
             .prefix(autoKeep)
         for episode in fresh {
             let station = episode.station(show: show)
-            if !isDownloaded(url: station.url), activeTasks[station.url] == nil {
+            if !isDownloaded(url: station.url), active[station.url] == nil {
                 download(station, auto: true)
             }
         }
@@ -160,30 +170,30 @@ final class DownloadManager {
 
     // MARK: completion
 
-    private func updateProgress(url: String, read: Int64, total: Int64) {
-        guard activeTasks[url] != nil else { return }
+    private func updateProgress(taskID: Int, url: String, read: Int64, total: Int64) {
+        // A stale callback from a replaced or cancelled task is dropped.
+        guard active[url]?.task.taskIdentifier == taskID else { return }
         let fraction = total > 0 ? min(max(Double(read) / Double(total), 0), 1) : -1
         states[url] = .active(fraction: fraction, bytesRead: read, totalBytes: total)
     }
 
-    private func finish(url: String, file: URL?, failure: String?) {
-        activeTasks.removeValue(forKey: url)
-        let station = activeStations.removeValue(forKey: url)
+    private func finish(taskID: Int, url: String, file: URL?, failure: String?) {
+        guard let running = active[url], running.task.taskIdentifier == taskID else { return }
+        active.removeValue(forKey: url)
         guard let file, failure == nil else {
-            states[url] = nil
-            if let failure { log.error("download failed: \(failure, privacy: .public)") }
-            return
-        }
-        guard let station else {
-            states[url] = nil
+            if let failure {
+                states[url] = .failed(failure)
+                log.error("download failed: \(failure, privacy: .public)")
+            }
             return
         }
         let entry = DownloadEntry(
             url: url,
             path: file.path,
             bytes: fileSize(file),
-            station: station,
-            downloadedAt: Int64(Date().timeIntervalSince1970 * 1000)
+            station: running.station,
+            downloadedAt: Int64(Date().timeIntervalSince1970 * 1000),
+            auto: running.auto
         )
         entries[url] = entry
         store.addDownload(entry)
@@ -232,11 +242,11 @@ private final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, @
 
     private let lock = NSLock()
     private var infos: [Int: TaskInfo] = [:]
-    /// 200 once a file is safely in place; the HTTP status otherwise.
+    /// The HTTP status once a file is safely in place, 0 when the move failed.
     private var outcomes: [Int: Int] = [:]
 
-    nonisolated(unsafe) var onProgress: (@Sendable (String, Int64, Int64) -> Void)?
-    nonisolated(unsafe) var onFinish: (@Sendable (String, URL?, String?) -> Void)?
+    nonisolated(unsafe) var onProgress: (@Sendable (Int, String, Int64, Int64) -> Void)?
+    nonisolated(unsafe) var onFinish: (@Sendable (Int, String, URL?, String?) -> Void)?
 
     func register(task: URLSessionDownloadTask, url: String, destination: URL) {
         lock.withLock { infos[task.taskIdentifier] = TaskInfo(url: url, destination: destination) }
@@ -249,7 +259,7 @@ private final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, @
     ) {
         let info = lock.withLock { infos[downloadTask.taskIdentifier] }
         guard let info else { return }
-        onProgress?(info.url, totalBytesWritten, totalBytesExpectedToWrite)
+        onProgress?(downloadTask.taskIdentifier, info.url, totalBytesWritten, totalBytesExpectedToWrite)
     }
 
     func urlSession(
@@ -260,13 +270,13 @@ private final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, @
         guard let info else { return }
         let status = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
-            lock.withLock { outcomes[downloadTask.taskIdentifier] = status }
+            lock.withLock { outcomes[downloadTask.taskIdentifier] = 0 }
             return
         }
         do {
             try? FileManager.default.removeItem(at: info.destination)
             try FileManager.default.moveItem(at: location, to: info.destination)
-            lock.withLock { outcomes[downloadTask.taskIdentifier] = 200 }
+            lock.withLock { outcomes[downloadTask.taskIdentifier] = 1 }
         } catch {
             lock.withLock { outcomes[downloadTask.taskIdentifier] = 0 }
         }
@@ -276,20 +286,21 @@ private final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, @
         _ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?
     ) {
         let info = lock.withLock { infos.removeValue(forKey: task.taskIdentifier) }
-        let outcome = lock.withLock { outcomes.removeValue(forKey: task.taskIdentifier) }
+        let moved = lock.withLock { outcomes.removeValue(forKey: task.taskIdentifier) } == 1
         guard let info else { return }
         if let error {
             if (error as? URLError)?.code == .cancelled {
-                onFinish?(info.url, nil, nil)
+                onFinish?(task.taskIdentifier, info.url, nil, nil)
             } else {
-                onFinish?(info.url, nil, error.localizedDescription.lowercased())
+                onFinish?(task.taskIdentifier, info.url, nil, error.localizedDescription.lowercased())
             }
             return
         }
-        if outcome == 200 {
-            onFinish?(info.url, info.destination, nil)
+        if moved {
+            onFinish?(task.taskIdentifier, info.url, info.destination, nil)
         } else {
-            onFinish?(info.url, nil, "http \(outcome ?? 0)")
+            let status = (task.response as? HTTPURLResponse)?.statusCode ?? 0
+            onFinish?(task.taskIdentifier, info.url, nil, status > 0 ? "http \(status)" : "download failed")
         }
     }
 }

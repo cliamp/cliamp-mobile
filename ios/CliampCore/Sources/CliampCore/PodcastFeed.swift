@@ -249,18 +249,38 @@ public enum PodcastFeed {
         let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !s.isEmpty else { return 0 }
         if !s.contains(":") {
-            guard let seconds = Double(s) else { return 0 }
-            return max(0, Int64(seconds * 1000))
+            // A feed can say `nan`, `inf` or a value whose milliseconds leave
+            // Int64; none of those may trap.
+            guard let seconds = Double(s), seconds.isFinite, seconds >= 0 else { return 0 }
+            let milliseconds = seconds * 1000
+            guard milliseconds.isFinite, milliseconds <= Double(Int64.max) else { return 0 }
+            return Int64(milliseconds)
         }
-        let parts = s.split(separator: ":").map { Int64($0.trimmingCharacters(in: .whitespaces)) ?? 0 }
+        let parts = s.split(separator: ":").map { Int64($0.trimmingCharacters(in: .whitespaces)) }
+        guard parts.allSatisfy({ $0 != nil && $0! >= 0 }) else { return 0 }
+        let values = parts.map { $0! }
         let seconds: Int64
-        switch parts.count {
-        case 3: seconds = parts[0] * 3600 + parts[1] * 60 + parts[2]
-        case 2: seconds = parts[0] * 60 + parts[1]
-        case 1: seconds = parts[0]
-        default: seconds = 0
+        switch values.count {
+        case 3:
+            let (hours, o1) = values[0].multipliedReportingOverflow(by: 3600)
+            let (minutes, o2) = values[1].multipliedReportingOverflow(by: 60)
+            let (hm, o3) = hours.addingReportingOverflow(minutes)
+            let (total, o4) = hm.addingReportingOverflow(values[2])
+            guard ![o1, o2, o3, o4].contains(true) else { return 0 }
+            seconds = total
+        case 2:
+            let (minutes, o1) = values[0].multipliedReportingOverflow(by: 60)
+            let (total, o2) = minutes.addingReportingOverflow(values[1])
+            guard !o1, !o2 else { return 0 }
+            seconds = total
+        case 1:
+            seconds = values[0]
+        default:
+            return 0
         }
-        return max(0, seconds * 1000)
+        let (milliseconds, overflow) = seconds.multipliedReportingOverflow(by: 1000)
+        guard !overflow, milliseconds >= 0 else { return 0 }
+        return milliseconds
     }
 
     /// RFC 822 dates, loosely: feeds differ on padded days and numeric vs named
@@ -355,10 +375,74 @@ public struct URLSessionPodcastFeedTransport: PodcastFeedTransport {
         guard let url = URL(string: urlString) else { throw URLError(.badURL) }
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw URLError(.badServerResponse)
+        // `data(for:)` would accumulate the whole body before any size check,
+        // so the loader cancels at the cap as bytes arrive.
+        return try await BoundedDataLoader(limit: 8 * 1024 * 1024).load(request)
+    }
+}
+
+/// One bounded request: ends with the body when it fits under `limit`, or an
+/// error as soon as it does not. A continuously delivering endpoint cannot
+/// keep it alive forever because the cap, not the idle timer, ends it.
+private final class BoundedDataLoader: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private let limit: Int
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Data, Error>?
+    private var data = Data()
+    private var status = 0
+
+    init(limit: Int) {
+        self.limit = limit
+    }
+
+    func load(_ request: URLRequest) async throws -> Data {
+        try await withCheckedThrowingContinuation { continuation in
+            lock.withLock { self.continuation = continuation }
+            let session = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
+            session.dataTask(with: request).resume()
         }
-        return data
+    }
+
+    func urlSession(
+        _ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+    ) {
+        lock.withLock { status = (response as? HTTPURLResponse)?.statusCode ?? 0 }
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive chunk: Data) {
+        let overflow = lock.withLock {
+            if data.count + chunk.count > limit { return true }
+            data.append(chunk)
+            return false
+        }
+        if overflow {
+            session.invalidateAndCancel()
+            finish(.failure(URLError(.dataLengthExceedsMaximum)))
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error {
+            finish(.failure(error))
+            return
+        }
+        let code = lock.withLock { status }
+        guard (200..<300).contains(code) else {
+            finish(.failure(URLError(.badServerResponse)))
+            return
+        }
+        finish(.success(lock.withLock { data }))
+    }
+
+    private func finish(_ result: Result<Data, Error>) {
+        let continuation = lock.withLock {
+            let held = self.continuation
+            self.continuation = nil
+            return held
+        }
+        guard let continuation else { return }
+        continuation.resume(with: result)
     }
 }

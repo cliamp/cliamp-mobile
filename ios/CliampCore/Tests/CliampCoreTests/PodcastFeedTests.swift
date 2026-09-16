@@ -107,6 +107,12 @@ struct PodcastFeedTests {
         #expect(PodcastFeed.parseDuration("2712") == 2_712_000)
         #expect(PodcastFeed.parseDuration("") == 0)
         #expect(PodcastFeed.parseDuration("nonsense") == 0)
+        // A hostile feed must not trap: NaN, infinity, huge values, negatives.
+        #expect(PodcastFeed.parseDuration("nan") == 0)
+        #expect(PodcastFeed.parseDuration("inf") == 0)
+        #expect(PodcastFeed.parseDuration("1e300") == 0)
+        #expect(PodcastFeed.parseDuration("999999999999999:59:59") == 0)
+        #expect(PodcastFeed.parseDuration("-5") == 0)
     }
 
     @Test("markup and entities are stripped to one line")
