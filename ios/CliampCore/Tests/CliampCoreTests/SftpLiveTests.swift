@@ -36,7 +36,7 @@ struct SftpLiveTests {
     @Test("probe learns the host key and validates the folders")
     func probe() async throws {
         let identity = try await SshProbe.probe(values())
-        #expect(identity.name == "tester@127.0.0.1:2222")
+        #expect(identity.name == "\(Self.user)@127.0.0.1:\(Self.port)")
         if let expected = Self.expectedFingerprint {
             #expect(identity.detail == expected)
         }
@@ -46,7 +46,7 @@ struct SftpLiveTests {
             config: sshConfig(values()), fingerprint: identity.detail
         )
         // The pin records the host it was seen on.
-        #expect(stored == "127.0.0.1:2222 \(identity.detail)")
+        #expect(stored == "127.0.0.1:\(Self.port) \(identity.detail)")
     }
 
     @Test("the probe finds folders when the field is left empty")
@@ -57,12 +57,16 @@ struct SftpLiveTests {
         #expect(identity.values["folders"]?.isEmpty == false)
     }
 
+    /// Key auth depends on the fixture's authorized_keys, so a run against a
+    /// server without them sets CLIAMP_SFTP_KEYS=0.
+    private static let keysAvailable = ProcessInfo.processInfo.environment["CLIAMP_SFTP_KEYS"] != "0"
+
     private func keyValues(keyPath: String, passphrase: String = "") -> [String: String] {
         let key = (try? String(contentsOfFile: keyPath, encoding: .utf8)) ?? ""
         return [
             "host": "127.0.0.1",
-            "port": "2222",
-            "user": "tester",
+            "port": Self.port,
+            "user": Self.user,
             "_auth": "key",
             "key": key,
             "passphrase": passphrase,
@@ -70,13 +74,13 @@ struct SftpLiveTests {
         ]
     }
 
-    @Test("a pasted ed25519 key authenticates")
+    @Test("a pasted ed25519 key authenticates", .enabled(if: Self.keysAvailable))
     func keyAuth() async throws {
         let identity = try await SshProbe.probe(keyValues(keyPath: "/tmp/cliamp-sftp/id_ed25519"))
         #expect(identity.detail.hasPrefix("SHA256:"))
     }
 
-    @Test("a passphrase-protected key authenticates with its passphrase")
+    @Test("a passphrase-protected key authenticates with its passphrase", .enabled(if: Self.keysAvailable))
     func keyPassphrase() async throws {
         let identity = try await SshProbe.probe(
             keyValues(keyPath: "/tmp/cliamp-sftp/id_ed25519_pw", passphrase: "keypass")
@@ -84,7 +88,7 @@ struct SftpLiveTests {
         #expect(identity.detail.hasPrefix("SHA256:"))
     }
 
-    @Test("a passphrase-protected key without its passphrase is refused")
+    @Test("a passphrase-protected key without its passphrase is refused", .enabled(if: Self.keysAvailable))
     func keyMissingPassphrase() async throws {
         await #expect(throws: SshError.self) {
             try await SshProbe.probe(keyValues(keyPath: "/tmp/cliamp-sftp/id_ed25519_pw"))
@@ -100,10 +104,22 @@ struct SftpLiveTests {
 
     @Test("a pinned fingerprint that does not match is refused")
     func mismatch() async throws {
-        let pinned = "127.0.0.1:2222 SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        let pinned = "127.0.0.1:\(Self.port) SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
         await #expect(throws: SshError.self) {
             try await SshProbe.probe(values(fingerprint: pinned))
         }
+    }
+
+    /// The first file reachable from the root, so the tests work against any
+    /// server layout (the fixture and the Docker library differ).
+    private func firstFile(_ session: SshSession, at root: String) async throws -> String? {
+        let top = try await session.list(root)
+        if let file = top.first(where: { $0.kind == .file }) { return file.path }
+        for directory in top.filter({ $0.kind == .directory }).prefix(3) {
+            let inner = try await session.list(directory.path)
+            if let file = inner.first(where: { $0.kind == .file }) { return file.path }
+        }
+        return nil
     }
 
     @Test("the listing channel recycles and reads keep working")
@@ -115,9 +131,8 @@ struct SftpLiveTests {
         }
         #expect(await session.listingRecycles >= 1)
         // A read after recycling still works: the read channel is separate.
-        let bytes = try await session.read(
-            "\(Self.root)/loose track.m4a", offset: 0, length: 16
-        )
+        let path = try #require(await firstFile(session, at: Self.root))
+        let bytes = try await session.read(path, offset: 0, length: 16)
         #expect(bytes.count == 16)
         #expect(try await session.list(Self.root).isEmpty == false)
     }
@@ -145,31 +160,36 @@ struct SftpLiveTests {
         defer { Task { await session.close() } }
 
         let entries = try await session.list(Self.root)
-        #expect(entries.contains { $0.name == "Boards of Canada" && $0.kind == .directory }, "entries: \(entries)")
+        #expect(entries.isEmpty == false)
 
         let box = LiveTrackBox()
         let scan = SftpScan(folders: [Self.root], onBatch: { box.append($0) })
         let total = try await scan.run(session)
-        #expect(total == 3)
-        #expect(box.tracks.contains { $0.title == "Wildlife Analysis" && $0.track == 1 })
-        #expect(box.tracks.contains { $0.artist == "Boards of Canada" && $0.album == "Music Has the Right to Children" })
-        #expect(box.tracks.contains { $0.title == "loose track" && $0.artist == "" })
+        #expect(total == box.tracks.count)
 
-        let stat = try await session.stat("\(Self.root)/loose track.m4a")
-        #expect(stat?.path == "\(Self.root)/loose track.m4a")
+        // The bundled fixture has a known shape; any other server (a real
+        // library, the Docker one) just has to produce sane tracks.
+        if Self.root.contains("cliamp-sftp") {
+            #expect(entries.contains { $0.name == "Boards of Canada" && $0.kind == .directory })
+            #expect(total == 3)
+            #expect(box.tracks.contains { $0.title == "Wildlife Analysis" && $0.track == 1 })
+            #expect(box.tracks.contains { $0.artist == "Boards of Canada" && $0.album == "Music Has the Right to Children" })
+            #expect(box.tracks.contains { $0.title == "loose track" && $0.artist == "" })
+        } else {
+            #expect(total > 0)
+            #expect(box.tracks.allSatisfy { !$0.title.isEmpty && !$0.path.isEmpty })
+        }
+
+        let sample = try #require(box.tracks.first { $0.ext == "m4a" } ?? box.tracks.first)
+        let stat = try await session.stat(sample.path)
+        #expect(stat?.path == sample.path)
         #expect(stat?.kind == .file)
         #expect(stat?.size ?? 0 > 0)
 
-        let first = try await session.read(
-            "\(Self.root)/Boards of Canada/Music Has the Right to Children/01 - Wildlife Analysis.m4a",
-            offset: 0, length: 32
-        )
+        let first = try await session.read(sample.path, offset: 0, length: 32)
         #expect(first.count == 32)
-        let later = try await session.read(
-            "\(Self.root)/Boards of Canada/Music Has the Right to Children/01 - Wildlife Analysis.m4a",
-            offset: 16_384, length: 32
-        )
-        #expect(later.count == 32)
+        let later = try await session.read(sample.path, offset: 16_384, length: 32)
+        #expect(later.count > 0)
         #expect(first != later)
     }
 }

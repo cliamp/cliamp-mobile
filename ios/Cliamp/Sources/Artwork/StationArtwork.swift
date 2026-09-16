@@ -2,6 +2,7 @@ import CliampCore
 import CryptoKit
 import Foundation
 import ImageIO
+import Synchronization
 import os
 import Synchronization
 import UIKit
@@ -15,6 +16,35 @@ import UIKit
 /// Decoded art lives in memory keyed by station id; the bytes live on disk for
 /// a week so a relaunch does not re-fetch. Downloads are capped and decodes are
 /// scaled through ImageIO, so a fast-scrolled list never holds full-size images.
+/// A tiny counting semaphore for bounding concurrent artwork extraction.
+actor AsyncSlots {
+    private let limit: Int
+    private var used = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(limit: Int) {
+        self.limit = limit
+    }
+
+    func acquire() async {
+        if used < limit {
+            used += 1
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        if waiters.isEmpty {
+            used = max(0, used - 1)
+        } else {
+            waiters.removeFirst().resume()
+        }
+    }
+}
+
 final class StationArtwork: @unchecked Sendable {
     static let shared = StationArtwork()
 
@@ -29,13 +59,55 @@ final class StationArtwork: @unchecked Sendable {
     private static let userAgent = "cliamp-mobile/0.0.1 (+https://cliamp.stream)"
 
     /// Embedded tag artwork (ID3 APIC, MP4 covr, FLAC picture) for stations
-    /// whose cover field is empty; set at launch, since it needs the file
-    /// reader for local songs and the SFTP sessions for provider tracks.
-    var embeddedArtwork: (@Sendable (Station) async -> Data?)?
+    /// whose cover field is empty. Installed once at launch; accessed under a
+    /// lock because artwork requests run from several tasks.
+    private let embeddedProvider = Mutex<(@Sendable (Station) async throws -> Data?)?>(nil)
+
+    func installEmbeddedProvider(_ provider: @escaping @Sendable (Station) async throws -> Data?) {
+        embeddedProvider.withLock { $0 = provider }
+    }
+
+    private var embeddedArtwork: (@Sendable (Station) async throws -> Data?)? {
+        embeddedProvider.withLock { $0 }
+    }
+
+    /// One extraction per station, shared by every row/player that asks while
+    /// it runs, and a small concurrency bound so a fast scroll cannot open a
+    /// burst of SFTP reads.
+    private let extractions = Mutex<[String: Task<Data?, Never>]>([:])
+    private let extractionSlots = AsyncSlots(limit: 3)
+
+    private func embeddedData(for station: Station) async -> Data? {
+        guard let provider = embeddedArtwork else { return nil }
+        let task = extractions.withLock { tasks -> Task<Data?, Never> in
+            if let existing = tasks[station.id] { return existing }
+            let created = Task { () -> Data? in
+                await extractionSlots.acquire()
+                defer { Task { await extractionSlots.release() } }
+                do {
+                    return try await provider(station)
+                } catch {
+                    return nil
+                }
+            }
+            tasks[station.id] = created
+            return created
+        }
+        let data = await task.value
+        if data == nil {
+            // Let a later request retry (the miss memo paces it out).
+            extractions.withLock { $0[station.id] = nil }
+        }
+        return data
+    }
 
     private let images = NSCache<NSString, UIImage>()
     private let smallImages = NSCache<NSString, UIImage>()
     private let misses = Mutex<[String: Date]>([:])
+
+    private func clearMiss(_ key: String) {
+        misses.withLock { _ = $0.removeValue(forKey: key) }
+    }
     private let resolvedURLs = Mutex<[String: String]>([:])
     private let cacheDirectory: URL
 
@@ -61,6 +133,7 @@ final class StationArtwork: @unchecked Sendable {
     func smallImage(for station: Station) async -> UIImage? {
         guard station.source != .cliamp else { return nil }
         if let cached = smallImages.object(forKey: station.id as NSString) { return cached }
+        if isOut(station.id) { return nil }
         var image = diskImage(key: station.id, target: Self.targetSmall)
         if image == nil {
             image = await cover(for: station, target: Self.targetSmall)
@@ -68,7 +141,9 @@ final class StationArtwork: @unchecked Sendable {
         if Task.isCancelled { return nil }
         if let image {
             smallImages.setObject(image, forKey: station.id as NSString)
-        } else if station.source == .local {
+        } else {
+            // Every source backs off after a miss, so scrolling an
+            // artwork-free list does not reparse it on every pass.
             noteMiss(station.id)
         }
         return image
@@ -101,13 +176,14 @@ final class StationArtwork: @unchecked Sendable {
             return await download(station.cover, saveAs: station.id, target: target)
         }
         // No sidecar and no URL: the art is inside the file's own tags.
-        if station.cover.isEmpty, let embeddedArtwork {
-            let data = await embeddedArtwork(station)
+        if station.cover.isEmpty, embeddedArtwork != nil {
+            let data = await embeddedData(for: station)
             if let data {
                 if let image = Self.scaledImage(data: data, target: target) {
                     // The disk cache is keyed by station id, so the next
                     // launch reads the extracted cover instead of the tag.
                     try? data.write(to: fileURL(station.id), options: .atomic)
+                    clearMiss(station.id)
                     return image
                 }
                 Self.log.error(

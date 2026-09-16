@@ -61,11 +61,11 @@ struct RootView: View {
             let providers = ProviderServices.shared.model
             // Cover art fallback for files with no companion image: read the
             // file's own tags, locally or over SFTP.
-            StationArtwork.shared.embeddedArtwork = { [providers] station in
+            StationArtwork.shared.installEmbeddedProvider { [providers] station in
                 switch station.source {
                 case .local:
                     guard let url = URL(string: station.url), url.isFileURL else { return nil }
-                    return await EmbeddedArtwork.extract(
+                    return try await EmbeddedArtwork.extract(
                         from: LocalFileByteRangeReader(url: url),
                         fileExtension: url.pathExtension
                     )
@@ -73,7 +73,7 @@ struct RootView: View {
                     guard let ref = SftpURI.parse(station.url),
                           let session = await providers.session(forAccountId: ref.accountId)
                     else { return nil }
-                    return await EmbeddedArtwork.extract(
+                    return try await EmbeddedArtwork.extract(
                         from: SftpByteRangeReader(session: session, path: ref.path),
                         fileExtension: (ref.path as NSString).pathExtension
                     )

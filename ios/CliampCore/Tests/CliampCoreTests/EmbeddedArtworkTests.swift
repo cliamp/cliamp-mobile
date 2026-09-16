@@ -134,7 +134,7 @@ struct RealFileArtworkTests {
     @Test("extracts the cover from a real file")
     func realFile() async throws {
         let path = ProcessInfo.processInfo.environment["CLIAMP_ART_FILE"] ?? ""
-        let image = await EmbeddedArtwork.extract(
+        let image = try await EmbeddedArtwork.extract(
             from: LocalFileByteRangeReader(url: URL(fileURLWithPath: path)),
             fileExtension: (path as NSString).pathExtension
         )
@@ -144,11 +144,111 @@ struct RealFileArtworkTests {
     }
 }
 
+/// A v2.3 tag with an extended header before the APIC frame.
+private func id3ExtendedHeaderFixture(image: Data) -> Data {
+    let extended = be32(6) + Data([0, 0]) + be32(0) // v2.3: size excludes itself
+    let apic = id3Fixture(image: image).dropFirst(10)
+    var tag = extended
+    tag.append(apic)
+    var header = Data([UInt8(ascii: "I"), UInt8(ascii: "D"), UInt8(ascii: "3"), 3, 0, 0x40])
+    header.append(syncSafe(tag.count))
+    return header + tag
+}
+
+/// A tag whose APIC payload was unsynchronised (00 inserted after FF). The
+/// frame size describes what is on disk, exactly as a real encoder writes it.
+private func id3UnsynchronisedFixture(image: Data) -> Data {
+    var payload = Data([0]) // latin1
+    payload.append(contentsOf: Array("image/jpeg".utf8))
+    payload.append(0)
+    payload.append(3)
+    payload.append(0) // empty description
+    payload.append(image)
+    var unsynchronised = Data()
+    for byte in payload {
+        unsynchronised.append(byte)
+        if byte == 0xFF { unsynchronised.append(0) }
+    }
+    var frame = Data([UInt8(ascii: "A"), UInt8(ascii: "P"), UInt8(ascii: "I"), UInt8(ascii: "C")])
+    frame.append(be32(unsynchronised.count))
+    frame.append(contentsOf: [0, 0])
+    frame.append(unsynchronised)
+    var header = Data([UInt8(ascii: "I"), UInt8(ascii: "D"), UInt8(ascii: "3"), 3, 0, 0x80])
+    header.append(syncSafe(frame.count))
+    return header + frame
+}
+
+/// Two APIC frames: the first carries a link (unusable), the second a JPEG.
+private func twoPictureFixture(image: Data) -> Data {
+    var tag = id3Fixture(image: image).dropFirst(10)
+    // First frame: an APIC whose mime is a link.
+    var linked = Data([0])
+    linked.append(contentsOf: Array("-->link".utf8))
+    linked.append(0)
+    linked.append(3)
+    linked.append(0)
+    linked.append(Data(count: 256))
+    var linkFrame = Data([UInt8(ascii: "A"), UInt8(ascii: "P"), UInt8(ascii: "I"), UInt8(ascii: "C")])
+    linkFrame.append(be32(linked.count))
+    linkFrame.append(contentsOf: [0, 0])
+    linkFrame.append(linked)
+    tag = linkFrame + tag
+    var header = Data([UInt8(ascii: "I"), UInt8(ascii: "D"), UInt8(ascii: "3"), 3, 0, 0])
+    header.append(syncSafe(tag.count))
+    return header + tag
+}
+
+/// A reader that counts requests, so a budget test can assert the bound.
+private final class CountingReader: ByteRangeReader, @unchecked Sendable {
+    private let data: Data
+    private let lock = NSLock()
+    private(set) var reads = 0
+
+    init(_ data: Data) {
+        self.data = data
+    }
+
+    func readRange(offset: Int64, length: Int) async throws -> Data {
+        lock.withLock { reads += 1 }
+        guard offset >= 0, offset < Int64(data.count) else { return Data() }
+        let end = min(Int(offset) + length, data.count)
+        return Data(data[Int(offset)..<end])
+    }
+
+    func fileSize() async throws -> Int64 {
+        Int64(data.count)
+    }
+}
+
+/// Many tiny non-picture frames, then nothing: the walk must stay bounded.
+private func manyFramesFixture(count: Int) -> Data {
+    var tag = Data()
+    for index in 0..<count {
+        var frame = Data([UInt8(ascii: "T"), UInt8(ascii: "X"), UInt8(ascii: "X"), UInt8(ascii: "X")])
+        let payload = be32(index)
+        frame.append(be32(payload.count))
+        frame.append(contentsOf: [0, 0])
+        frame.append(payload)
+        tag.append(frame)
+    }
+    var header = Data([UInt8(ascii: "I"), UInt8(ascii: "D"), UInt8(ascii: "3"), 3, 0, 0])
+    header.append(syncSafe(tag.count))
+    return header + tag
+}
+
+private func extendedSizeMP4Fixture() -> Data {
+    // free atom, then a moov declaring an impossible extended size.
+    let free = atom("free", Data(count: 8))
+    var moov = Data([0, 0, 0, 1]) + Data("moov".utf8)
+    moov.append(contentsOf: [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
+    return free + moov
+}
+
 @Suite("embedded artwork")
 struct EmbeddedArtworkTests {
     @Test("ID3v2.3 APIC is extracted")
     func id3v23() async throws {
-        let image = await EmbeddedArtwork.extract(
+        let image = try await EmbeddedArtwork.extract(
             from: BlobReader(id3Fixture()), fileExtension: "mp3"
         )
         #expect(image == pngBytes)
@@ -156,7 +256,7 @@ struct EmbeddedArtworkTests {
 
     @Test("ID3v2.4 syncsafe frame sizes are extracted")
     func id3v24() async throws {
-        let image = await EmbeddedArtwork.extract(
+        let image = try await EmbeddedArtwork.extract(
             from: BlobReader(id3Fixture(version: 4)), fileExtension: "mp3"
         )
         #expect(image == pngBytes)
@@ -166,15 +266,76 @@ struct EmbeddedArtworkTests {
     func unicodeDescription() async throws {
         // A real JPEG header, so the parser's own magic check applies.
         let jpeg = Data([0xFF, 0xD8, 0xFF, 0xE0]) + Data(count: 252)
-        let image = await EmbeddedArtwork.extract(
+        let image = try await EmbeddedArtwork.extract(
             from: BlobReader(id3UnicodeDescriptionFixture(image: jpeg)), fileExtension: "mp3"
         )
         #expect(image == jpeg)
     }
 
+    @Test("a v2.3 extended header does not hide the cover")
+    func extendedHeader() async throws {
+        let image = try await EmbeddedArtwork.extract(
+            from: BlobReader(id3ExtendedHeaderFixture(image: pngBytes)), fileExtension: "mp3"
+        )
+        #expect(image == pngBytes)
+    }
+
+    @Test("tag-level unsynchronisation is reversed before parsing")
+    func unsynchronised() async throws {
+        // A JPEG whose bytes contain 0xFF runs, so unsynchronisation actually
+        // inserts zeros into the image data.
+        let jpeg = Data([0xFF, 0xD8, 0xFF, 0xFF, 0x00, 0xFF, 0xE0]) + Data(count: 128)
+        let image = try await EmbeddedArtwork.extract(
+            from: BlobReader(id3UnsynchronisedFixture(image: jpeg)), fileExtension: "mp3"
+        )
+        #expect(image == jpeg)
+    }
+
+    @Test("an unusable first picture does not hide a later one")
+    func laterPictureWins() async throws {
+        let image = try await EmbeddedArtwork.extract(
+            from: BlobReader(twoPictureFixture(image: pngBytes)), fileExtension: "mp3"
+        )
+        #expect(image == pngBytes)
+    }
+
+    @Test("a payload crossing the declared tag end is refused")
+    func payloadBeyondTag() async throws {
+        var base = id3Fixture()
+        base.replaceSubrange(6..<10, with: syncSafe(20)) // tag far too small
+        #expect(try await EmbeddedArtwork.extract(from: BlobReader(base), fileExtension: "mp3") == nil)
+    }
+
+    @Test("a huge frame walk stays within the read budget")
+    func budgetBounded() async throws {
+        let reader = CountingReader(manyFramesFixture(count: 5_000))
+        #expect(try await EmbeddedArtwork.extract(from: reader, fileExtension: "mp3") == nil)
+        #expect(reader.reads <= EmbeddedArtwork.maxReads + 2)
+    }
+
+    @Test("a malformed extended MP4 size cannot trap or be accepted")
+    func mp4Overflow() async throws {
+        #expect(try await EmbeddedArtwork.extract(
+            from: BlobReader(extendedSizeMP4Fixture()), fileExtension: "m4a"
+        ) == nil)
+    }
+
+    @Test("cancellation propagates out of extraction")
+    func cancellation() async {
+        struct CancellingReader: ByteRangeReader {
+            func readRange(offset: Int64, length: Int) async throws -> Data {
+                throw CancellationError()
+            }
+            func fileSize() async throws -> Int64 { 4096 }
+        }
+        await #expect(throws: CancellationError.self) {
+            try await EmbeddedArtwork.extract(from: CancellingReader(), fileExtension: "mp3")
+        }
+    }
+
     @Test("an MP4 covr atom is found past a large mdat")
     func mp4() async throws {
-        let image = await EmbeddedArtwork.extract(
+        let image = try await EmbeddedArtwork.extract(
             from: BlobReader(m4aFixture()), fileExtension: "m4a"
         )
         #expect(image == pngBytes)
@@ -182,7 +343,7 @@ struct EmbeddedArtworkTests {
 
     @Test("a FLAC PICTURE block is extracted")
     func flac() async throws {
-        let image = await EmbeddedArtwork.extract(
+        let image = try await EmbeddedArtwork.extract(
             from: BlobReader(flacFixture()), fileExtension: "flac"
         )
         #expect(image == pngBytes)
@@ -202,7 +363,7 @@ struct EmbeddedArtworkTests {
         tag.append(huge)
         var header = Data([UInt8(ascii: "I"), UInt8(ascii: "D"), UInt8(ascii: "3"), 3, 0, 0])
         header.append(syncSafe(tag.count))
-        let image = await EmbeddedArtwork.extract(
+        let image = try await EmbeddedArtwork.extract(
             from: BlobReader(header + tag), fileExtension: "mp3"
         )
         #expect(image == nil)
@@ -210,10 +371,10 @@ struct EmbeddedArtworkTests {
 
     @Test("junk, wrong extensions and truncation all yield nothing")
     func rejects() async throws {
-        #expect(await EmbeddedArtwork.extract(from: BlobReader(Data(count: 64)), fileExtension: "mp3") == nil)
-        #expect(await EmbeddedArtwork.extract(from: BlobReader(id3Fixture()), fileExtension: "wav") == nil)
+        #expect(try await EmbeddedArtwork.extract(from: BlobReader(Data(count: 64)), fileExtension: "mp3") == nil)
+        #expect(try await EmbeddedArtwork.extract(from: BlobReader(id3Fixture()), fileExtension: "wav") == nil)
         let truncated = BlobReader(id3Fixture(), maxRead: 8)
-        #expect(await EmbeddedArtwork.extract(from: truncated, fileExtension: "mp3") == nil)
+        #expect(try await EmbeddedArtwork.extract(from: truncated, fileExtension: "mp3") == nil)
     }
 
     @Test("a second APIC is reached when the first frame is something else")
@@ -227,7 +388,7 @@ struct EmbeddedArtworkTests {
         tag.append(apic)
         var header = Data([UInt8(ascii: "I"), UInt8(ascii: "D"), UInt8(ascii: "3"), 3, 0, 0])
         header.append(syncSafe(tag.count))
-        let image = await EmbeddedArtwork.extract(
+        let image = try await EmbeddedArtwork.extract(
             from: BlobReader(header + tag), fileExtension: "mp3"
         )
         #expect(image == pngBytes)

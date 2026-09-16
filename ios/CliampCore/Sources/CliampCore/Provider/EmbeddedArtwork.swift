@@ -17,26 +17,62 @@ public enum EmbeddedArtwork {
     /// Nothing beyond this is read while hunting for a cover: a lying header
     /// costs one capped read, not an unbounded one.
     public static let maxScanBytes = 4 * 1024 * 1024
+    /// A tag can declare hundreds of thousands of tiny frames; the walk stops
+    /// after this many range requests so a hostile or damaged file cannot turn
+    /// extraction into an unbounded stream of reads (each one a round trip
+    /// over SFTP).
+    public static let maxReads = 128
+
+    /// Per-extraction accounting: every read is counted, and the walk gives up
+    /// once the budget is spent.
+    final class Budget: @unchecked Sendable {
+        private var reads = 0
+        private var bytes = 0
+
+        func canRead(_ length: Int) -> Bool {
+            reads < maxReads && bytes < maxScanBytes && length >= 0
+        }
+
+        func spend(_ length: Int) {
+            reads += 1
+            bytes += length
+        }
+    }
 
     /// Reads are normalized to zero-based Data: a range request may return a
     /// slice whose indices start at the offset, and the parser indexes from 0.
+    /// Cancellation is checked before every request.
     private static func bytes(
-        _ reader: ByteRangeReader, offset: Int64, length: Int
-    ) async -> Data? {
-        guard let raw = try? await reader.readRange(offset: offset, length: length) else {
+        _ reader: ByteRangeReader, offset: Int64, length: Int, budget: Budget
+    ) async throws -> Data? {
+        if Task.isCancelled { throw CancellationError() }
+        guard offset >= 0, length > 0, budget.canRead(length) else { return nil }
+        budget.spend(length)
+        let raw: Data
+        do {
+            raw = try await reader.readRange(offset: offset, length: length)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
             return nil
         }
         return raw.startIndex == 0 ? raw : Data(raw)
     }
 
-    public static func extract(from reader: ByteRangeReader, fileExtension: String) async -> Data? {
+    /// Embedded cover bytes, or nil when the file has none. Only cancellation
+    /// is thrown; every other failure (malformed tag, short read, budget) is
+    /// reported as "no artwork".
+    public static func extract(
+        from reader: ByteRangeReader, fileExtension: String
+    ) async throws -> Data? {
+        let budget = Budget()
         switch fileExtension.lowercased() {
         case "mp3":
-            return await fromID3(reader)
+            return try await fromID3(reader, budget: budget)
         case "m4a", "m4b", "mp4", "aac":
-            return await fromMP4(reader)
+            return try await fromMP4(reader, budget: budget)
         case "flac":
-            return await fromFLAC(reader)
+            return try await fromFLAC(reader, budget: budget)
         default:
             return nil
         }
@@ -44,38 +80,119 @@ public enum EmbeddedArtwork {
 
     // MARK: ID3v2 (mp3)
 
-    private static func fromID3(_ reader: ByteRangeReader) async -> Data? {
-        guard let header = await bytes(reader, offset: 0, length: 10),
+    private static func fromID3(_ reader: ByteRangeReader, budget: Budget) async throws -> Data? {
+        guard let header = try await bytes(reader, offset: 0, length: 10, budget: budget),
               header.count == 10, header.starts(with: Array("ID3".utf8))
         else { return nil }
         let major = Int(header[3])
         guard major == 3 || major == 4, let tagSize = syncSafe(header, 6) else { return nil }
-        let tagEnd = 10 + min(tagSize, maxScanBytes)
-        var cursor: Int64 = 10
-        while cursor + 10 <= Int64(tagEnd) {
-            guard let frame = await bytes(reader, offset: cursor, length: 10),
+        let flags = header[5]
+        let tagEnd = Int64(10 + min(tagSize, maxScanBytes))
+
+        // Extended header: v2.3's size excludes its own four bytes, v2.4's
+        // includes the whole extended header.
+        var framesStart: Int64 = 10
+        if flags & 0x40 != 0 {
+            guard let ext = try await bytes(reader, offset: 10, length: 6, budget: budget),
+                  ext.count == 6, let extSize = plainU32(ext, 0)
+            else { return nil }
+            framesStart = major == 4
+                ? 10 + Int64(min(Int(extSize), maxScanBytes))
+                : 10 + 4 + Int64(min(Int(extSize), maxScanBytes))
+        }
+        let unsynchronised = flags & 0x80 != 0
+        return try await id3Pictures(
+            reader, major: major, start: framesStart, tagEnd: tagEnd,
+            unsynchronised: unsynchronised, budget: budget
+        )
+    }
+
+    /// Walks frames until the tag ends or the budget runs out, collecting
+    /// usable pictures. An unsupported or oversized picture does not stop the
+    /// walk: a later APIC can still be the real cover.
+    private static func id3Pictures(
+        _ reader: ByteRangeReader,
+        major: Int,
+        start: Int64,
+        tagEnd: Int64,
+        unsynchronised: Bool,
+        budget: Budget
+    ) async throws -> Data? {
+        var cursor = start
+        var candidates = 0
+        while cursor + 10 <= tagEnd {
+            guard let frame = try await bytes(reader, offset: cursor, length: 10, budget: budget),
                   frame.count == 10
             else { return nil }
             let identifier = String(decoding: frame[0..<4], as: UTF8.self)
             guard identifier.allSatisfy({ $0.isLetter || $0.isNumber }) else { return nil }
             let size: Int? = major == 4 ? syncSafe(frame, 4) : plainU32(frame, 4).map(Int.init)
             guard let frameSize = size, frameSize > 0 else { return nil }
-            let payloadStart = cursor + 10
-            if identifier == "APIC" {
-                guard frameSize <= maxImageBytes + 1024 else { return nil }
-                guard let payload = await bytes(reader, offset: payloadStart, length: frameSize),
-                      payload.count == frameSize
-                else { return nil }
-                return imageFromAPIC(payload)
+            let frameFlags = (Int(frame[8]) << 8) | Int(frame[9])
+            var payloadStart = cursor + 10
+            var payloadLength = frameSize
+
+            if major == 4 {
+                // Data-length indicator, then unsynchronisation.
+                if frameFlags & 0x01 != 0 {
+                    payloadStart += 4
+                    payloadLength = max(0, payloadLength - 4)
+                }
+            } else {
+                // Compression and encryption are unsupported: skip the frame.
+                if frameFlags & 0xC0 != 0 {
+                    cursor = payloadStart + Int64(frameSize)
+                    continue
+                }
+                if frameFlags & 0x20 != 0 { payloadStart += 1 }
             }
-            cursor = payloadStart + Int64(frameSize)
+            // The declared payload must live inside the tag and the scan cap.
+            guard payloadStart >= cursor + 10,
+                  payloadStart + Int64(payloadLength) <= tagEnd
+            else { return nil }
+
+            if identifier == "APIC", payloadLength <= maxImageBytes + 1024 {
+                candidates += 1
+                if let payload = try await bytes(
+                    reader, offset: payloadStart, length: payloadLength, budget: budget
+                ) {
+                    var data = payload
+                    if unsynchronised || (major == 4 && frameFlags & 0x02 != 0) {
+                        data = deunsynchronised(data)
+                    }
+                    if let image = imageFromAPIC(data) { return image }
+                }
+                if candidates >= 8 { return nil }
+            }
+            cursor = payloadStart + Int64(payloadLength)
         }
         return nil
+    }
+
+    /// Tag-level unsynchronisation inserts a zero byte after every `0xFF`; the
+    /// reverse drops a `00` that follows an `FF`, leaving the original bytes.
+    static func deunsynchronised(_ data: Data) -> Data {
+        var out = Data()
+        out.reserveCapacity(data.count)
+        var iterator = data.makeIterator()
+        var previous: UInt8?
+        while let byte = iterator.next() {
+            if let last = previous, last == 0xFF, byte == 0x00 {
+                // Swallowed: the next byte is the real content. Clearing the
+                // mark keeps a legitimate 00 00 pair intact.
+                previous = nil
+                continue
+            }
+            out.append(byte)
+            previous = byte
+        }
+        return out
     }
 
     /// `APIC`: encoding byte, null-terminated mime, picture type, a
     /// null-terminated description in that encoding, then the image bytes.
     private static func imageFromAPIC(_ payload: Data) -> Data? {
+        guard payload.count > 4 else { return nil }
         var index = 1 // encoding byte
         guard let mimeEnd = payload[index...].firstIndex(of: 0) else { return nil }
         let mime = String(decoding: payload[index..<mimeEnd], as: UTF8.self).lowercased()
@@ -132,26 +249,34 @@ public enum EmbeddedArtwork {
 
     // MARK: MP4 atoms (m4a/m4b/mp4)
 
-    private static func fromMP4(_ reader: ByteRangeReader) async -> Data? {
+    private static func fromMP4(_ reader: ByteRangeReader, budget: Budget) async throws -> Data? {
         guard let size = try? await reader.fileSize(), size > 16 else { return nil }
         // moov > udta > meta > ilst > covr > data, each a direct child of the
         // previous. Headers only: a 500 MB mdat is stepped over, never read.
-        guard let moov = await child(reader, of: AtomRange(start: 0, end: size), type: "moov"),
-              let udta = await child(reader, of: moov, type: "udta"),
-              let meta = await child(reader, of: udta, type: "meta"),
+        guard let moov = try await child(
+                  reader, of: AtomRange(start: 0, end: size), type: "moov", budget: budget
+              ),
+              let udta = try await child(reader, of: moov, type: "udta", budget: budget),
+              let meta = try await child(reader, of: udta, type: "meta", budget: budget),
               // `meta` is a full box: four version/flags bytes precede its children.
-              let ilst = await child(reader, of: AtomRange(start: meta.start + 4, end: meta.end), type: "ilst"),
-              let covr = await child(reader, of: ilst, type: "covr"),
-              let data = await child(reader, of: covr, type: "data")
+              let ilst = try await child(
+                  reader,
+                  of: AtomRange(start: meta.start + 4, end: meta.end),
+                  type: "ilst", budget: budget
+              ),
+              let covr = try await child(reader, of: ilst, type: "covr", budget: budget),
+              let data = try await child(reader, of: covr, type: "data", budget: budget)
         else { return nil }
         // `data` payload: four type-flag bytes, four locale bytes, the image.
         let payloadStart = data.start + 8
+        guard payloadStart <= data.end else { return nil }
         let length = data.end - payloadStart
         guard length >= 64, length <= maxImageBytes else { return nil }
-        guard let payload = await bytes(reader, offset: payloadStart, length: Int(length)),
-              payload.count == Int(length)
+        guard let payload = try await bytes(
+            reader, offset: payloadStart, length: Int(length), budget: budget
+        ), payload.count == Int(length)
         else { return nil }
-        return payload
+        return Data(normalizedImage(payload))
     }
 
     struct AtomRange {
@@ -159,30 +284,35 @@ public enum EmbeddedArtwork {
         let end: Int64
     }
 
-    /// The first direct child of `parent` with the given atom type.
+    /// The first direct child of `parent` with the given atom type. Only
+    /// headers are read, so a large `mdat` is stepped over, never fetched.
     static func child(
         _ reader: ByteRangeReader,
         of parent: AtomRange,
-        type: String
-    ) async -> AtomRange? {
+        type: String,
+        budget: Budget
+    ) async throws -> AtomRange? {
         var cursor = parent.start
-        var reads = 0
-        while cursor + 8 <= parent.end, reads < 128 {
-            reads += 1
-            guard let header = await bytes(reader, offset: cursor, length: 16),
+        while cursor < parent.end {
+            guard parent.end - cursor >= 8 else { return nil }
+            guard let header = try await bytes(reader, offset: cursor, length: 16, budget: budget),
                   header.count >= 8
             else { return nil }
             var size = Int64(plainU32(header, 0) ?? 0)
             let kind = String(decoding: header[4..<8], as: UTF8.self)
             var headerLength: Int64 = 8
             if size == 1 {
-                guard let big = plainU64(header, 8) else { return nil }
-                size = Int64(clamping: big)
+                guard header.count >= 16, let big = plainU64(header, 8) else { return nil }
+                // A size that cannot fit in Int64, or that overflows when
+                // added, is malformed: reject rather than trap.
+                guard big <= UInt64(Int64.max) else { return nil }
+                size = Int64(big)
                 headerLength = 16
             } else if size == 0 {
                 size = parent.end - cursor
             }
-            guard size >= headerLength, cursor + size <= parent.end else { return nil }
+            // Subtraction-based bounds: never add a hostile size to an offset.
+            guard size >= headerLength, size <= parent.end - cursor else { return nil }
             if kind == type {
                 return AtomRange(start: cursor + headerLength, end: cursor + size)
             }
@@ -193,13 +323,14 @@ public enum EmbeddedArtwork {
 
     // MARK: FLAC
 
-    private static func fromFLAC(_ reader: ByteRangeReader) async -> Data? {
-        guard let marker = await bytes(reader, offset: 0, length: 4),
+    private static func fromFLAC(_ reader: ByteRangeReader, budget: Budget) async throws -> Data? {
+        guard let marker = try await bytes(reader, offset: 0, length: 4, budget: budget),
               marker.count == 4, marker.starts(with: Array("fLaC".utf8))
         else { return nil }
         var cursor: Int64 = 4
-        for _ in 0..<64 {
-            guard let header = await bytes(reader, offset: cursor, length: 4),
+        var candidates = 0
+        while true {
+            guard let header = try await bytes(reader, offset: cursor, length: 4, budget: budget),
                   header.count == 4
             else { return nil }
             let isLast = header[0] & 0x80 != 0
@@ -207,16 +338,18 @@ public enum EmbeddedArtwork {
             let length = Int(header[1]) << 16 | Int(header[2]) << 8 | Int(header[3])
             let body = cursor + 4
             if blockType == 6, length >= 32, length <= maxImageBytes + 1024 {
-                guard let payload = await bytes(reader, offset: body, length: length),
-                      payload.count == length, let image = imageFromFLACPicture(payload)
-                else { return nil }
-                return image
+                candidates += 1
+                // An unusable picture block does not end the search: a later
+                // one can still be the cover.
+                if let payload = try await bytes(reader, offset: body, length: length, budget: budget),
+                   payload.count == length, let image = imageFromFLACPicture(payload) {
+                    return image
+                }
+                if candidates >= 8 { return nil }
             }
             if isLast { return nil }
-            guard length <= maxScanBytes else { return nil }
             cursor = body + Int64(length)
         }
-        return nil
     }
 
     /// FLAC `PICTURE`: type, mime length + mime, description length +
