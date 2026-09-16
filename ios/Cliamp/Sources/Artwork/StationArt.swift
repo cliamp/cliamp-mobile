@@ -7,6 +7,11 @@ enum StationArtFallback {
     case plate
 }
 
+enum StationArtTarget {
+    case small
+    case full
+}
+
 /// A fixed-size station thumbnail: real branding when it exists, otherwise the
 /// broadcast mark the app has always drawn.
 struct StationArtView: View {
@@ -15,6 +20,7 @@ struct StationArtView: View {
     let size: CGFloat
     var corner: CGFloat = CliampShape.small
     var fallback: StationArtFallback = .glyph
+    var target: StationArtTarget = .small
     @State private var image: UIImage?
 
     var body: some View {
@@ -38,16 +44,25 @@ struct StationArtView: View {
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: corner))
         .task(id: station.id) {
-            if let cached = StationArtwork.shared.cachedSmall(for: station) {
+            if target == .small, let cached = StationArtwork.shared.cachedSmall(for: station) {
                 image = cached
-            } else {
-                image = await StationArtwork.shared.smallImage(for: station)
+                return
             }
+            if target == .full, let cached = StationArtwork.shared.cached(for: station) {
+                image = cached
+                return
+            }
+            let loaded = target == .small
+                ? await StationArtwork.shared.smallImage(for: station)
+                : await StationArtwork.shared.image(for: station)
+            guard !Task.isCancelled else { return }
+            image = loaded
         }
     }
 }
 
 /// A square that fills whatever width the layout gives it, for grid tiles.
+/// Tiles load the full-size image, the way the Android tiles use `bitmapFor`.
 struct StationArtSquare: View {
     let station: Station
     var corner: CGFloat = CliampShape.medium
@@ -58,7 +73,8 @@ struct StationArtSquare: View {
                 station: station,
                 size: proxy.size.width,
                 corner: corner,
-                fallback: .plate
+                fallback: .plate,
+                target: .full
             )
         }
         .aspectRatio(1, contentMode: .fit)
@@ -105,11 +121,14 @@ struct StationArtPlate: View {
         .task(id: station?.id) {
             image = nil
             guard let station else { return }
+            let loaded: UIImage?
             if let cached = StationArtwork.shared.cached(for: station) {
-                image = cached
+                loaded = cached
             } else {
-                image = await StationArtwork.shared.image(for: station)
+                loaded = await StationArtwork.shared.image(for: station)
             }
+            guard !Task.isCancelled else { return }
+            image = loaded
         }
     }
 

@@ -57,6 +57,7 @@ final class StationArtwork: @unchecked Sendable {
         if image == nil {
             image = await cover(for: station, target: Self.targetSmall)
         }
+        if Task.isCancelled { return nil }
         if let image {
             smallImages.setObject(image, forKey: station.id as NSString)
         } else if station.source == .local {
@@ -73,6 +74,8 @@ final class StationArtwork: @unchecked Sendable {
         if image == nil {
             image = await cover(for: station, target: Self.target)
         }
+        // Cancellation is not a failed cover: it must not start a backoff.
+        if Task.isCancelled { return nil }
         if let image {
             images.setObject(image, forKey: station.id as NSString)
         } else {
@@ -81,10 +84,14 @@ final class StationArtwork: @unchecked Sendable {
         return image
     }
 
-    /// The station's cover: the scraped og:image first, then the favicon the
-    /// directory recorded. A discovered URL that refuses to decode is forgotten
-    /// so the fallback happens on the spot instead of pinning a dead link.
+    /// The station's cover: a known cover URL first (provider/podcast art),
+    /// then the scraped og:image, then the favicon the directory recorded. A
+    /// discovered URL that refuses to decode is forgotten so the fallback
+    /// happens on the spot instead of pinning a dead link.
     private func cover(for station: Station, target: CGFloat) async -> UIImage? {
+        if station.cover.hasPrefix("http") {
+            return await download(station.cover, saveAs: station.id, target: target)
+        }
         guard let url = await imageURL(for: station) else { return nil }
         if let image = await download(url, saveAs: station.id, target: target) {
             return image
@@ -152,11 +159,11 @@ final class StationArtwork: @unchecked Sendable {
         request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("text/html", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 10
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-              (http.value(forHTTPHeaderField: "Content-Type") ?? "").localizedCaseInsensitiveContains("html")
+        guard let result = await BoundedLoader(limit: Self.maxHTML).load(request),
+              (result.response.value(forHTTPHeaderField: "Content-Type") ?? "")
+              .localizedCaseInsensitiveContains("html")
         else { return nil }
-        let head = String(decoding: data.prefix(Self.maxHTML), as: UTF8.self)
+        let head = String(decoding: result.data, as: UTF8.self)
         let raw = firstCapture(Self.ogTag, in: head, attribute: Self.contentAttribute)
             ?? firstCapture(Self.appleTag, in: head, attribute: Self.hrefAttribute)
         guard let raw else { return nil }
@@ -196,11 +203,13 @@ final class StationArtwork: @unchecked Sendable {
         var request = URLRequest(url: url)
         request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 15
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-              data.count >= 64, data.count <= Self.maxImage
+        // Bounded read: the loader stops at the cap rather than buffering the
+        // whole response first.
+        guard let result = await BoundedLoader(limit: Self.maxImage).load(request),
+              (200..<300).contains(result.response.statusCode),
+              result.data.count >= 64
         else { return nil }
-        let contentType = (http.value(forHTTPHeaderField: "Content-Type") ?? "")
+        let contentType = (result.response.value(forHTTPHeaderField: "Content-Type") ?? "")
             .split(separator: ";").first.map { $0.trimmingCharacters(in: .whitespaces).lowercased() } ?? ""
         if !contentType.isEmpty, !contentType.hasPrefix("image/"), contentType != "image/x-icon",
            contentType != "image/vnd.microsoft.icon"
@@ -208,9 +217,11 @@ final class StationArtwork: @unchecked Sendable {
             return nil
         }
         if contentType == "image/svg+xml" { return nil }
-        guard let image = Self.scaledImage(data: data, target: target) else { return nil }
+        guard let image = Self.scaledImage(data: result.data, target: target) else { return nil }
         if let key {
-            try? data.write(to: fileURL(key))
+            // Atomic: a reader can never observe a partial write, and two
+            // writers racing for the same key leave one complete file.
+            try? result.data.write(to: fileURL(key), options: .atomic)
         }
         return image
     }
@@ -252,5 +263,83 @@ final class StationArtwork: @unchecked Sendable {
             return nil
         }
         return UIImage(cgImage: cgImage)
+    }
+}
+
+/// A one-shot bounded fetch: reads through a delegate and stops at the cap,
+/// instead of buffering whatever the server sends and checking afterwards.
+private final class BoundedLoader: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private let limit: Int
+    private let lock = NSLock()
+    private var data = Data()
+    private var response: HTTPURLResponse?
+    private var continuation: CheckedContinuation<Data?, Never>?
+    private var session: URLSession?
+    private var task: URLSessionDataTask?
+    private var finished = false
+
+    init(limit: Int) {
+        self.limit = limit
+    }
+
+    func load(_ request: URLRequest) async -> (data: Data, response: HTTPURLResponse)? {
+        let data = await withCheckedContinuation { (continuation: CheckedContinuation<Data?, Never>) in
+            let session = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
+            let task = session.dataTask(with: request)
+            lock.withLock {
+                self.continuation = continuation
+                self.session = session
+                self.task = task
+            }
+            task.resume()
+        }
+        let http: HTTPURLResponse? = lock.withLock { self.response }
+        guard let data, let http else { return nil }
+        return (data, http)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+    ) {
+        lock.withLock {
+            self.response = response as? HTTPURLResponse
+        }
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        let overflow = lock.withLock {
+            let overflow = data.count > limit - self.data.count
+            if !overflow {
+                self.data.append(data)
+            }
+            return overflow
+        }
+        if overflow {
+            dataTask.cancel()
+            finish(nil)
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        let data = lock.withLock { error == nil ? self.data : nil }
+        finish(data)
+    }
+
+    private func finish(_ data: Data?) {
+        let (continuation, session): (CheckedContinuation<Data?, Never>?, URLSession?) = lock.withLock {
+            guard !finished else { return (nil, nil) }
+            finished = true
+            let continuation = self.continuation
+            self.continuation = nil
+            let session = self.session
+            self.session = nil
+            return (continuation, session)
+        }
+        session?.invalidateAndCancel()
+        continuation?.resume(returning: data)
     }
 }

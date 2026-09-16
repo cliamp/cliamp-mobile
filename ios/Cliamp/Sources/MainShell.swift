@@ -160,11 +160,14 @@ struct MiniPlayerBar: View {
         .task(id: player.station?.id) {
             artImage = nil
             guard let station = player.station else { return }
+            let loaded: UIImage?
             if let cached = StationArtwork.shared.cachedSmall(for: station) {
-                artImage = cached
+                loaded = cached
             } else {
-                artImage = await StationArtwork.shared.smallImage(for: station)
+                loaded = await StationArtwork.shared.smallImage(for: station)
             }
+            guard !Task.isCancelled else { return }
+            artImage = loaded
         }
     }
 
