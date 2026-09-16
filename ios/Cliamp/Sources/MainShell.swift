@@ -172,6 +172,7 @@ struct MiniPlayerBar: View {
         guard let station = player.station else { return "pick a station to start" }
         if let error = player.error { return error }
         if player.buffering { return "buffering…" }
+        if !player.streamTitle.isEmpty { return player.streamTitle }
         return station.sourceLine
     }
 

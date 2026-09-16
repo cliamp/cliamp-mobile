@@ -80,26 +80,35 @@ struct NowPlayingScreen: View {
     }
 
     private var meta: some View {
-        VStack(spacing: 7) {
+        VStack(alignment: .leading, spacing: 7) {
             Text(player.station?.name ?? "pick a station")
                 .cliampText(CliampType.trackTitle)
                 .foregroundStyle(palette.ink)
                 .lineLimit(1)
-            Text(player.error ?? statusFallback)
+            Text(metaSecondary)
                 .cliampText(CliampType.rowPrimary)
-                .foregroundStyle(player.error != nil ? palette.destructiveInk : palette.inkSecondary)
+                .foregroundStyle(secondaryColor)
                 .lineLimit(1)
             Text(player.station?.sourceLine ?? "cliamp radio")
                 .cliampText(CliampType.body)
                 .foregroundStyle(palette.inkTertiary)
                 .lineLimit(1)
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var statusFallback: String {
+    /// The ICY stream title when the stream sends one, otherwise the error or
+    /// the station's tag line.
+    private var metaSecondary: String {
+        if !player.streamTitle.isEmpty { return player.streamTitle }
+        if let error = player.error { return error }
         guard let station = player.station else { return "nothing playing" }
         return station.tagList.prefix(3).joined(separator: " · ")
+    }
+
+    private var secondaryColor: Color {
+        if player.error != nil, player.streamTitle.isEmpty { return palette.destructiveInk }
+        return palette.inkSecondary
     }
 
     private var statusStrip: some View {
@@ -161,7 +170,7 @@ struct NowPlayingScreen: View {
                     .cliampText(CliampType.time)
                     .foregroundStyle(palette.inkSecondary)
                 Spacer()
-                Text(player.playing ? "live" : "tap play")
+                Text(player.playing ? "\(player.bufferedSeconds)s buffered" : "tap the meter for scope · eq")
                     .cliampText(CliampType.timeSmall)
                     .foregroundStyle(palette.inkFaint)
             }

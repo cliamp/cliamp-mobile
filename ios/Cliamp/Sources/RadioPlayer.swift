@@ -12,6 +12,7 @@ import os
 final class RadioPlayer {
     private let player = AVPlayer()
     private let errorLog = Logger(subsystem: "stream.cliamp.mobile", category: "player")
+    private let icy = IcyMetadataReader()
     private var timeControlObservation: NSKeyValueObservation?
     private var itemStatusObservation: NSKeyValueObservation?
     private var tap: SpectrumTap?
@@ -23,6 +24,8 @@ final class RadioPlayer {
     let spectrum = SpectrumStore()
 
     private(set) var station: Station?
+    private(set) var streamTitle = ""
+    private(set) var bufferedSeconds = 0
     private(set) var playing = false
     private(set) var buffering = false
     private(set) var error: String?
@@ -42,6 +45,9 @@ final class RadioPlayer {
         self.station = station
         error = nil
         elapsedMs = 0
+        bufferedSeconds = 0
+        streamTitle = ""
+        icy.stop()
         spectrum.clear()
         guard let url = URL(string: station.url) else {
             error = "couldn't play that stream"
@@ -80,15 +86,31 @@ final class RadioPlayer {
         }
         player.replaceCurrentItem(with: item)
         player.play()
+        icy.start(url: url) { [weak self] title in
+            Task { @MainActor [weak self] in
+                self?.streamTitle = title
+            }
+        }
     }
 
     func toggle() {
         guard station != nil else { return }
         if playing {
             player.pause()
+            icy.stop()
         } else {
             error = nil
             player.play()
+            resumeMetadata()
+        }
+    }
+
+    private func resumeMetadata() {
+        guard let station, let url = URL(string: station.url) else { return }
+        icy.start(url: url) { [weak self] title in
+            Task { @MainActor [weak self] in
+                self?.streamTitle = title
+            }
         }
     }
 
@@ -106,6 +128,12 @@ final class RadioPlayer {
                     let seconds = CMTimeGetSeconds(item.currentTime())
                     if seconds.isFinite, seconds >= 0 {
                         self.elapsedMs = Int64(seconds * 1000)
+                    }
+                    let ahead = item.loadedTimeRanges
+                        .map { CMTimeGetSeconds($0.timeRangeValue.end) }
+                        .max() ?? 0
+                    if ahead.isFinite, seconds.isFinite {
+                        self.bufferedSeconds = max(0, Int(ahead - seconds))
                     }
                 }
             }
