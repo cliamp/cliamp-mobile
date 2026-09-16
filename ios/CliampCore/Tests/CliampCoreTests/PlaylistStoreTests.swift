@@ -100,12 +100,30 @@ struct PlaylistStoreTests {
         #expect(resolved.map(\.id) == ["radio:1", "local:x.mp3"])
     }
 
-    @Test("slugify keeps Unicode letters and collapses punctuation")
+    @Test("slugify keeps Unicode letters and digits, collapses punctuation")
     func slugs() {
         #expect(Playlist.slugify("Night Drive!") == "night-drive")
         #expect(Playlist.slugify("  A -- B  ") == "a-b")
         #expect(Playlist.slugify("Björk Mix") == "björk-mix")
         #expect(Playlist.slugify("!!!").hasPrefix("playlist-"))
+        // Unicode decimal digits survive, so these stay distinct.
+        #expect(Playlist.slugify("Mix ١") == "mix-١")
+        #expect(Playlist.slugify("Mix ٢") == "mix-٢")
+    }
+
+    @Test("playlists read in name order, pinned and unpinned alike")
+    func ordering() {
+        let store = store()
+        store.create(name: "Zebra")
+        store.create(name: "alpha")
+        store.create(name: "Mix")
+        #expect(store.all().map(\.name) == ["alpha", "Mix", "Zebra"])
+        store.setPinned(slug: "zebra", pinned: true)
+        store.create(name: "Beat")
+        #expect(store.pinned().map(\.name) == ["Zebra"])
+        #expect(store.unpinned().map(\.name) == ["alpha", "Beat", "Mix"])
+        store.rename(slug: "beat", name: "Aardvark")
+        #expect(store.unpinned().map(\.name) == ["Aardvark", "alpha", "Mix"])
     }
 
     @Test("resolveMembers drops members that no longer exist, in place")

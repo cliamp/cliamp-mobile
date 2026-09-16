@@ -9,6 +9,7 @@ enum LibraryDestination: Hashable {
     case playlist(String)
     case playlistAdding(String)
     case providers
+    case providersConnect
 }
 
 /// The third tab: pinned smart lists, connected providers and the user's
@@ -24,6 +25,9 @@ struct LibraryScreen: View {
     let onOpenProviders: () -> Void
     let onOpenSearch: () -> Void
     let onOpenSettings: () -> Void
+    /// False while another tab or a pane covers the page: Android drops any
+    /// half-finished naming when the page goes away.
+    let visible: Bool
 
     @State private var creating = false
     @State private var renamingSlug: String?
@@ -31,28 +35,45 @@ struct LibraryScreen: View {
     @FocusState private var nameFocused: Bool
 
     var body: some View {
-        VStack(spacing: 0) {
-            CliampHeader(
-                "Library",
-                onSearch: onOpenSearch,
-                onSettings: onOpenSettings,
-                onTitleTap: {}
-            )
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    pinnedSection
-                    if !model.playlists.isEmpty {
-                        SectionLabel("playlists — \(model.playlists.count)")
+        ScrollViewReader { proxy in
+            VStack(spacing: 0) {
+                CliampHeader(
+                    "Library",
+                    onSearch: onOpenSearch,
+                    onSettings: onOpenSettings,
+                    onTitleTap: { proxy.scrollTo(Self.topAnchor, anchor: .top) }
+                )
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        Color.clear.frame(height: 0).id(Self.topAnchor)
+                        pinnedSection
+                        if !unpinnedPlaylists.isEmpty {
+                            SectionLabel("playlists — \(unpinnedPlaylists.count)")
+                        }
+                        ForEach(unpinnedPlaylists) { playlist in
+                            playlistRow(playlist)
+                        }
+                        Spacer().frame(height: 20)
                     }
-                    ForEach(model.playlists) { playlist in
-                        playlistRow(playlist)
-                    }
-                    Spacer().frame(height: 20)
                 }
             }
         }
         .background(palette.ground)
         .task { await model.start() }
+        .onChange(of: visible) { _, shown in
+            if !shown {
+                creating = false
+                renamingSlug = nil
+            }
+        }
+    }
+
+    private static let topAnchor = "library-top"
+
+    /// Pinned rows render above; the ordinary section is unpinned only, the
+    /// way Android splits them.
+    private var unpinnedPlaylists: [Playlist] {
+        model.playlists.filter { !$0.pinned }
     }
 
     // MARK: pinned
@@ -266,7 +287,10 @@ struct NameField: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            TextField(placeholder, text: $text)
+            TextField(placeholder, text: Binding(
+                get: { text },
+                set: { text = String($0.prefix(48)) }
+            ))
                 .cliampText(CliampType.rowPrimary)
                 .foregroundStyle(palette.ink)
                 .textInputAutocapitalization(.never)

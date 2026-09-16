@@ -44,8 +44,11 @@ struct RootView: View {
             // Episode playback: resume where it stopped, commit progress on
             // the podcast cadence, and prefer a downloaded file on disk.
             let services = PodcastServices.shared
-            player.resumeProvider = { [podcasts = services.podcasts] station in
-                podcasts.resumePosition(station)
+            player.resumeProvider = { [app, podcasts = services.podcasts] station in
+                // Local files start at zero unless Resume local songs is on;
+                // episodes always resume (PlayerConnection.kt:941).
+                if station.source == .local, !app.resumeLocalSongs { return 0 }
+                return podcasts.resumePosition(station)
             }
             player.progressSink = { [podcasts = services.podcasts] station, position, duration in
                 podcasts.saveProgress(station, positionMs: position, durationMs: duration)

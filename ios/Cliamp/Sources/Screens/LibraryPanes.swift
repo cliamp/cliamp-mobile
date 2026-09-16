@@ -1,5 +1,6 @@
 import CliampCore
 import CliampDesign
+import PhotosUI
 import SwiftUI
 
 /// One smart list as a page above the pager: sort chips for the on-device
@@ -19,14 +20,25 @@ struct SmartDetailScreen: View {
 
     @State private var folder: String?
     @State private var pendingDelete: Station?
+    /// Recently-played re-sorts itself on every tap, so the list would jump
+    /// under the finger; freeze it on entry like Android does.
+    @State private var frozenRecent: [Station]?
 
     var body: some View {
-        VStack(spacing: 0) {
-            CliampHeader(kind.label, onBack: onBack, onSearch: onOpenSearch, onSettings: onOpenSettings) {
+        ScrollViewReader { proxy in
+            VStack(spacing: 0) {
+            CliampHeader(
+                kind.label,
+                onBack: onBack,
+                onSearch: onOpenSearch,
+                onSettings: onOpenSettings,
+                onTitleTap: { proxy.scrollTo(Self.topAnchor, anchor: .top) }
+            ) {
                 chips
             }
             ScrollView {
                 LazyVStack(spacing: 0) {
+                    Color.clear.frame(height: 0).id(Self.topAnchor)
                     if visible.isEmpty {
                         Text(emptyCopy)
                             .cliampText(CliampType.rowSecondary)
@@ -42,8 +54,14 @@ struct SmartDetailScreen: View {
                     Spacer().frame(height: 20)
                 }
             }
+            }
         }
         .background(palette.ground)
+        .onAppear {
+            if kind == .recentlyPlayed, frozenRecent == nil, !app.history.isEmpty {
+                frozenRecent = app.history
+            }
+        }
         .onChange(of: model.folders().map(\.id)) { _, ids in
             if let folder, !ids.contains(folder) { self.folder = nil }
         }
@@ -68,13 +86,15 @@ struct SmartDetailScreen: View {
         }
     }
 
+    private static let topAnchor = "smart-top"
+
     // MARK: members
 
     private var members: [Station] {
         model.members(
             for: kind,
             favorites: app.favorites,
-            history: app.history,
+            history: kind == .recentlyPlayed ? (frozenRecent ?? app.history) : app.history,
             downloads: downloads.entries.values.map(\.station)
         )
     }
@@ -121,7 +141,9 @@ struct SmartDetailScreen: View {
             }
         case .localSongs:
             sortChips
-            folderMenu
+            if !model.folders().isEmpty {
+                folderMenu(model.folders())
+            }
         case .downloads:
             sortChips
         case .recentlyPlayed:
@@ -138,12 +160,11 @@ struct SmartDetailScreen: View {
     }
 
     private func sortLabel(_ sort: StationSort) -> String {
-        sort == .recentlyAdded ? "recent" : sort.rawValue
+        sort == .recentlyAdded ? "recently added" : sort.rawValue
     }
 
-    private var folderMenu: some View {
-        let folders = model.folders()
-        return Menu {
+    private func folderMenu(_ folders: [LocalFolder]) -> some View {
+        Menu {
             Button("all folders") { folder = nil }
             ForEach(folders) { item in
                 Button(item.name) { folder = item.id }
@@ -170,7 +191,6 @@ struct SmartDetailScreen: View {
                 }
             }
         }
-        .disabled(folders.isEmpty)
     }
 
     // MARK: rows
@@ -243,13 +263,22 @@ struct SmartDetailScreen: View {
             }
     }
 
+    /// Android's `PlaybackContext.Library(kind, folder, scope)`: folder and
+    /// scope only join the key for the lists that actually filter by them, so
+    /// changing an unrelated filter cannot orphan an edited queue.
     private var contextKey: String {
-        "library:\(kind.rawValue):\(folder ?? "-"):\(model.favScope.rawValue)"
+        var key = "library:\(kind.rawValue)"
+        if kind == .localSongs { key += ":\(folder ?? "-")" }
+        if kind == .favorites { key += ":\(model.favScope.rawValue)" }
+        return key
     }
 
     private func coverFallback(_ station: Station, local: Bool) -> StationArtFallback {
-        if local || station.source == .local { return .music }
-        return station.source == .podcast ? .podcast : .glyph
+        switch station.source {
+        case .local: .music
+        case .podcast: .podcast
+        default: .glyph
+        }
     }
 
     private func resumed(_ station: Station, local: Bool) -> EpisodeProgress? {
@@ -297,51 +326,69 @@ struct PlaylistDetailScreen: View {
     let onOpenSearch: () -> Void
     let onOpenSettings: () -> Void
 
+    @State private var addingNow = false
+    @State private var photoItem: PhotosPickerItem?
+    @State private var showPhotoPicker = false
+
     var body: some View {
         let playlist = model.playlist(slug: slug)
-        VStack(spacing: 0) {
-            CliampHeader(
-                playlist?.name ?? "playlist",
-                onBack: onBack,
-                onSearch: onOpenSearch,
-                onSettings: onOpenSettings
-            ) {
-                if !adding, playlist != nil {
-                    ForEach(StationSort.allCases, id: \.self) { sort in
-                        Chip(sort == .recentlyAdded ? "recent" : sort.rawValue,
-                             selected: model.sort(for: .localSongs) == sort) {
-                            model.setSort(sort, for: .localSongs)
-                        }
+        ScrollViewReader { proxy in
+            VStack(spacing: 0) {
+                CliampHeader(
+                    playlist?.name ?? "playlist",
+                    onBack: onBack,
+                    onSearch: onOpenSearch,
+                    onSettings: onOpenSettings,
+                    onTitleTap: { proxy.scrollTo(Self.topAnchor, anchor: .top) }
+                ) {
+                    if playlist != nil, !addingNow {
+                        Chip("add", selected: false) { addingNow = true }
+                        Chip("set cover", selected: false) { showPhotoPicker = true }
                     }
                 }
-            }
-            if let playlist, adding {
-                AddSongsView(
-                    playlist: playlist,
-                    model: model,
-                    app: app,
-                    podcasts: podcasts,
-                    onDone: onAdded
-                )
-            } else if let playlist {
-                membersList(playlist)
-            } else {
-                Text("no such playlist")
-                    .cliampText(CliampType.rowSecondary)
-                    .foregroundStyle(palette.inkFaint)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 24)
-                Spacer()
+                if let playlist, addingNow {
+                    AddSongsView(
+                        playlist: playlist,
+                        model: model,
+                        app: app,
+                        podcasts: podcasts,
+                        onDone: { addingNow = false }
+                    )
+                } else if let playlist {
+                    membersList(playlist, proxy: proxy)
+                } else {
+                    Text("playlist gone")
+                        .cliampText(CliampType.rowSecondary)
+                        .foregroundStyle(palette.inkFaint)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 24)
+                    Spacer()
+                }
             }
         }
         .background(palette.ground)
+        .onAppear { if adding { addingNow = true } }
+        .photosPicker(isPresented: $showPhotoPicker, selection: $photoItem, matching: .images)
+        .onChange(of: photoItem) { _, item in
+            guard let item else { return }
+            Task {
+                if let data = try? await item.loadTransferable(type: Data.self) {
+                    model.setCover(slug: slug, data: data)
+                }
+                photoItem = nil
+            }
+        }
     }
 
-    private func membersList(_ playlist: Playlist) -> some View {
+    private static let topAnchor = "playlist-top"
+
+    private func membersList(_ playlist: Playlist, proxy: ScrollViewProxy) -> some View {
         let members = model.members(slug: playlist.slug)
-        let visible = model.sort(for: .localSongs).apply(members)
+        let sort = model.sort(forPlaylist: playlist.slug)
+        let visible = sort.apply(members)
         return ScrollView {
             LazyVStack(spacing: 0) {
+                Color.clear.frame(height: 0).id(Self.topAnchor)
                 if members.isEmpty {
                     Text("empty — tap add")
                         .cliampText(CliampType.rowSecondary)
@@ -349,6 +396,22 @@ struct PlaylistDetailScreen: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 24)
                 } else {
+                    // Sorting lives above the members, like Android's pane.
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 7) {
+                            ForEach(StationSort.allCases, id: \.self) { option in
+                                Chip(
+                                    option == .recentlyAdded ? "recently added" : option.rawValue,
+                                    selected: sort == option
+                                ) {
+                                    model.setSort(option, forPlaylist: playlist.slug)
+                                }
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, cliampGutter)
+                        .padding(.vertical, 4)
+                    }
                     SectionLabel("songs — \(members.count)")
                     ForEach(visible, id: \.id) { station in
                         memberRow(station, visible: visible)
@@ -481,17 +544,23 @@ struct AddSongsView: View {
             LazyVStack(spacing: 0) {
                 switch tab {
                 case .local:
-                    ForEach(model.songs, id: \.id) { station in
-                        toggleRow(station, subtitle: station.artistAlbum.isEmpty
-                            ? (station.durationMs > 0 ? TimeFormat.clock(station.durationMs) : "local audio")
-                            : station.artistAlbum)
-                    }
                     if model.songs.isEmpty {
                         emptyNote("no local songs yet")
+                    } else {
+                        ForEach(model.songs, id: \.id) { station in
+                            toggleRow(station, subtitle: station.artistAlbum.isEmpty
+                                ? (station.durationMs > 0 ? TimeFormat.clock(station.durationMs) : "local audio")
+                                : station.artistAlbum)
+                        }
                     }
                 case .stations:
-                    ForEach(model.addableStations(favorites: app.favorites, history: app.history), id: \.id) { station in
-                        toggleRow(station, subtitle: station.meta)
+                    let stations = model.addableStations(favorites: app.favorites)
+                    if stations.isEmpty {
+                        emptyNote("no stations to add")
+                    } else {
+                        ForEach(stations, id: \.id) { station in
+                            toggleRow(station, subtitle: station.meta)
+                        }
                     }
                 case .podcasts:
                     podcastList
@@ -504,22 +573,31 @@ struct AddSongsView: View {
     @ViewBuilder
     private var podcastList: some View {
         if let show = openShow {
-            SectionLabel(show.title) {
-                Text("back")
-                    .cliampText(CliampType.tabLabel)
-                    .foregroundStyle(palette.accent)
-                    .microPress { openShow = nil }
+            HStack(spacing: 9) {
+                Chip("‹ shows", selected: false) { openShow = nil }
+                Text(show.title)
+                    .cliampText(CliampType.chip)
+                    .foregroundStyle(palette.ink)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
             }
-            ForEach(podcasts.episodes, id: \.audioUrl) { episode in
-                toggleRow(episode.station(show: show), subtitle: episode.listMeta)
-            }
-            if podcasts.showLoading, podcasts.episodes.isEmpty {
-                emptyNote("loading…")
-            } else if podcasts.episodes.isEmpty {
-                emptyNote("no episodes yet")
+            .padding(.horizontal, cliampGutter)
+            .padding(.vertical, 6)
+            if podcasts.showLoading {
+                note("loading episodes…")
+            } else {
+                ForEach(podcasts.episodes.filter(\.isFull), id: \.audioUrl) { episode in
+                    let station = episode.station(show: show)
+                    toggleRow(
+                        station,
+                        subtitle: station.durationMs > 0
+                            ? TimeFormat.clock(station.durationMs)
+                            : "episode"
+                    )
+                }
             }
         } else if podcasts.subscriptions.isEmpty {
-            emptyNote("no subscribed shows yet")
+            emptyNote("no subscribed podcasts yet")
         } else {
             ForEach(podcasts.subscriptions, id: \.feedUrl) { show in
                 ListRow(
@@ -527,8 +605,10 @@ struct AddSongsView: View {
                         openShow = show
                         podcasts.openShow(show)
                     },
-                    leading: { StationArtView(station: show.artStation, size: 40, fallback: .podcast) },
-                    verticalPadding: 8
+                    trailing: {
+                        CliampIcon(CliampIcons.caretRight, size: 11, tint: palette.inkTertiary)
+                    },
+                    verticalPadding: 9
                 ) {
                     Text(show.title)
                         .cliampText(CliampType.rowPrimary)
@@ -543,6 +623,8 @@ struct AddSongsView: View {
         }
     }
 
+    /// Android's picker row: a 24-point selection box leads every selectable
+    /// item, no artwork.
     private func toggleRow(_ station: Station, subtitle: String) -> some View {
         let selected = picked.contains(station.id)
         return ListRow(
@@ -555,13 +637,18 @@ struct AddSongsView: View {
                     model.addStation(slug: playlist.slug, station: station)
                 }
             },
-            leading: { StationArtView(station: station, size: 40, fallback: .music) },
-            trailing: {
-                CliampIcon(
-                    CliampIcons.check,
-                    size: 13,
-                    tint: selected ? palette.accent : palette.inkFaint.opacity(0.4)
-                )
+            leading: {
+                RoundedRectangle(cornerRadius: CliampShape.tiny)
+                    .fill(selected ? palette.accent : .clear)
+                    .overlay {
+                        if selected {
+                            CliampIcon(CliampIcons.check, size: 10, tint: palette.onAccent)
+                        } else {
+                            RoundedRectangle(cornerRadius: CliampShape.tiny)
+                                .stroke(palette.chipBorder, lineWidth: 1)
+                        }
+                    }
+                    .frame(width: 24, height: 24)
             },
             verticalPadding: 8
         ) {
@@ -577,6 +664,10 @@ struct AddSongsView: View {
     }
 
     private func emptyNote(_ text: String) -> some View {
+        note(text)
+    }
+
+    private func note(_ text: String) -> some View {
         Text(text)
             .cliampText(CliampType.rowSecondary)
             .foregroundStyle(palette.inkFaint)
@@ -585,6 +676,77 @@ struct AddSongsView: View {
     }
 }
 
+/// What the Library's providers row opens: the connected accounts' songs. No
+/// account exists until the provider slice (DEC-05), so the honest empty state
+/// stands in — the same note Android shows before its first account.
+struct ProvidersSongsPane: View {
+    @Environment(\.cliampPalette) private var palette
+    let onBack: () -> Void
+    let onOpenConnect: () -> Void
+    let onOpenSearch: () -> Void
+    let onOpenSettings: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            CliampHeader("providers", onBack: onBack, onSearch: onOpenSearch, onSettings: onOpenSettings) {
+                EmptyView()
+            }
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    SectionLabel("songs — 0") {
+                        CliampIcon(CliampIcons.plus, size: 16, tint: palette.accent)
+                            .frame(width: 34, height: 34)
+                            .background(palette.dark ? palette.keyFace : palette.ground)
+                            .clipShape(RoundedRectangle(cornerRadius: CliampShape.small))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: CliampShape.small)
+                                    .stroke(palette.keyBorder, lineWidth: 1)
+                            )
+                            .microPress(action: onOpenConnect)
+                    }
+                    Text("no providers yet — add one with +")
+                        .cliampText(CliampType.rowSecondary)
+                        .foregroundStyle(palette.inkFaint)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 24)
+                    Spacer().frame(height: 20)
+                }
+            }
+        }
+        .background(palette.ground)
+    }
+}
+
+/// The providers pane itself: connected accounts, then every addable type.
+struct ProvidersConnectPane: View {
+    @Environment(\.cliampPalette) private var palette
+    let onBack: () -> Void
+    let onOpenSearch: () -> Void
+    let onOpenSettings: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            CliampHeader("providers", onBack: onBack, onSearch: onOpenSearch, onSettings: onOpenSettings) {
+                EmptyView()
+            }
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    SectionLabel("connected — 0") {
+                        EmptyView()
+                    }
+                    Text("nothing connected yet")
+                        .cliampText(CliampType.rowSecondary)
+                        .foregroundStyle(palette.inkFaint)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, cliampGutter)
+                        .padding(.vertical, 8)
+                    Spacer().frame(height: 20)
+                }
+            }
+        }
+        .background(palette.ground)
+    }
+}
 /// The providers pane: the connected accounts. Provider protocols land with
 /// their own slice (DEC-05), so the honest empty state is all there is now —
 /// the same note Android shows before its first account.

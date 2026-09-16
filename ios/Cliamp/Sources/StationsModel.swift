@@ -1,6 +1,18 @@
 import CliampCore
 import Foundation
 
+/// One process-wide stations model: the Library's add-songs picker needs the
+/// directory pages loaded in the Stations tab, and two independent models
+/// would page the same directory twice.
+@MainActor
+final class StationsServices {
+    static let shared = StationsServices()
+
+    let model = StationsModel()
+
+    private init() {}
+}
+
 /// The Stations tab's state: cliamp's own channels, the custom list, and the
 /// paged community directory, kept side by side the way the Android repository
 /// keeps them.

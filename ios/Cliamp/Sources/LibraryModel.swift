@@ -64,6 +64,8 @@ final class LibraryModel {
     private(set) var downloadSort: StationSort
     private(set) var scanned = false
     var favScope: FavScope = .all
+    /// Invalidates a scan that finished after a newer refresh began.
+    private var scanGeneration = 0
 
     /// Android's detail sort key for the downloads list; local songs share the
     /// library's key.
@@ -86,9 +88,16 @@ final class LibraryModel {
     // MARK: scanning
 
     /// The cached index paints first; the scan then replaces it, so a warm
-    /// launch never shows an empty library while the disk is walked.
+    /// launch never shows an empty library while the disk is walked. Cache
+    /// reads and writes run off the main actor; a generation counter makes a
+    /// deletion-triggered scan win over any older scan still in flight.
     func start() async {
-        if let cached = library.cachedSongs() {
+        scanGeneration += 1
+        let token = scanGeneration
+        let library = self.library
+        if let cached = await Task.detached(priority: .userInitiated, operation: {
+            library.cachedSongs()
+        }).value, token == scanGeneration {
             apply(cached)
         }
         loading = songs.isEmpty
@@ -97,10 +106,14 @@ final class LibraryModel {
     }
 
     func refresh() async {
+        scanGeneration += 1
+        let token = scanGeneration
         if songs.isEmpty { loading = true }
         error = nil
+        let library = self.library
         let found = await library.scan()
-        library.save(found)
+        guard token == scanGeneration else { return }
+        await Task.detached(priority: .utility) { library.save(found) }.value
         apply(found)
         loading = false
         scanned = true
@@ -203,6 +216,35 @@ final class LibraryModel {
         reloadPlaylists()
     }
 
+    /// The playlist pane's own sort choice, keyed by slug like Android's
+    /// `playlistSort(slug)`.
+    func sort(forPlaylist slug: String) -> StationSort {
+        preferences.sort(for: slug)
+    }
+
+    func setSort(_ sort: StationSort, forPlaylist slug: String) {
+        preferences.setSort(sort, for: slug)
+    }
+
+    func setCover(slug: String, cover: String) {
+        store.setCover(slug: slug, cover: cover)
+        reloadPlaylists()
+    }
+
+    /// Copies a picked image into the app's container and points the playlist
+    /// at it. Android keeps the picker URI; iOS copies so the cover survives
+    /// the picker's temporary grant.
+    func setCover(slug: String, data: Data) {
+        let support = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        ).first ?? FileManager.default.temporaryDirectory
+        let directory = support.appendingPathComponent("CliampLibrary/covers", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("\(slug).img")
+        guard (try? data.write(to: file, options: .atomic)) != nil else { return }
+        setCover(slug: slug, cover: file.absoluteString)
+    }
+
     func setPinned(slug: String, pinned: Bool) {
         store.setPinned(slug: slug, pinned: pinned)
         reloadPlaylists()
@@ -238,10 +280,9 @@ final class LibraryModel {
     /// Android's `playlistPreview`: the first names, then a count of the rest.
     func playlistPreview(_ playlist: Playlist) -> String {
         guard !playlist.songIds.isEmpty else { return "" }
-        let byId = Dictionary(
-            (songs + store.snapshotStations()).map { ($0.id, $0.name) },
-            uniquingKeysWith: { first, _ in first }
-        )
+        // Android's home preview resolves local names only; radio and podcast
+        // members show as "…" until the playlist is opened.
+        let byId = Dictionary(songs.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
         let head = 4
         let names = playlist.songIds.prefix(head).map { byId[$0] ?? "…" }.joined(separator: " · ")
         guard playlist.songIds.count > head else { return names }
@@ -249,13 +290,18 @@ final class LibraryModel {
     }
 
     /// Everything the add-songs picker's stations tab offers: cliamp's own
-    /// channels, hand-added stations, then the user's favourites and history,
-    /// de-duplicated by URL.
-    func addableStations(favorites: [Station], history: [Station]) -> [Station] {
+    /// channels, hand-added stations, the directory pages loaded in the
+    /// Stations tab, then radio-only favourites — Android's exact collection,
+    /// de-duplicated by id.
+    func addableStations(favorites: [Station]) -> [Station] {
+        let radioFavorites = favorites.filter { $0.source != .local && $0.source != .podcast }
         var seen = Set<String>()
         var out: [Station] = []
-        for station in CliampRadio.builtin + customStore.load() + favorites + history
-        where seen.insert(station.url).inserted {
+        for station in CliampRadio.builtin
+            + customStore.load()
+            + StationsServices.shared.model.directory
+            + radioFavorites
+        where seen.insert(station.id).inserted {
             out.append(station)
         }
         return out

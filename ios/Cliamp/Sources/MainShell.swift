@@ -49,8 +49,13 @@ struct MainShell: View {
                 tab = .library
                 libraryPath = [.smart(.localSongs)]
             }
-            if arguments.contains("-cliamp-preview-library-playlists") {
+            if arguments.contains("-cliamp-preview-library-providers") {
                 tab = .library
+                libraryPath = [.providers]
+            }
+            if arguments.contains("-cliamp-preview-library-playlist") {
+                tab = .library
+                libraryPath = [.playlist("night-drive")]
             }
         }
         #endif
@@ -112,6 +117,9 @@ struct MainShell: View {
                     onOpenShow: { show in
                         showSearch = false
                         tab = .pods
+                        // Android resets navigation: the Library stack must
+                        // not sit above the show detail.
+                        libraryPath = []
                         // Android returns to the Podcasts root, not the
                         // previous show.
                         podcastPath = [show]
@@ -159,7 +167,8 @@ struct MainShell: View {
             onAddSongs: { libraryPath = [.playlistAdding($0)] },
             onOpenProviders: { libraryPath = [.providers] },
             onOpenSearch: { showSearch = true },
-            onOpenSettings: onOpenSettings
+            onOpenSettings: onOpenSettings,
+            visible: tab == .library && libraryPath.isEmpty && !showSearch && !showSettings
         )
     }
 
@@ -207,8 +216,15 @@ struct MainShell: View {
                 onOpenSettings: onOpenSettings
             )
         case .providers:
-            ProvidersPane(
+            ProvidersSongsPane(
                 onBack: { libraryPath = [] },
+                onOpenConnect: { libraryPath = [.providersConnect] },
+                onOpenSearch: { showSearch = true },
+                onOpenSettings: onOpenSettings
+            )
+        case .providersConnect:
+            ProvidersConnectPane(
+                onBack: { libraryPath = [.providers] },
                 onOpenSearch: { showSearch = true },
                 onOpenSettings: onOpenSettings
             )

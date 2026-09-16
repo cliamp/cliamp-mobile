@@ -39,7 +39,9 @@ public struct Playlist: Codable, Sendable, Equatable, Hashable, Identifiable {
     /// dash, trimmed; an empty name falls back to a timestamp slug.
     public static func slugify(_ name: String) -> String {
         let mapped = name.lowercased().map { character -> String in
-            if character.isLetter || ("0"..."9").contains(character) {
+            // Kotlin's isLetterOrDigit: Unicode letters and decimal digits,
+            // so "Mix ١" and "Mix ٢" stay distinct slugs.
+            if character.isLetter || character.isNumber {
                 return String(character)
             }
             return "-"
@@ -93,7 +95,13 @@ public final class PlaylistStore: @unchecked Sendable {
     // MARK: reading
 
     public func all() -> [Playlist] {
-        lock.withLock { playlists }
+        lock.withLock { Self.ordered(playlists) }
+    }
+
+    /// Android's `ORDER BY position, name` with position 0 everywhere, which
+    /// is a case-insensitive name order in practice.
+    private static func ordered(_ list: [Playlist]) -> [Playlist] {
+        list.sorted { $0.name.lowercased() < $1.name.lowercased() }
     }
 
     public func playlist(slug: String) -> Playlist? {
@@ -105,11 +113,11 @@ public final class PlaylistStore: @unchecked Sendable {
     }
 
     public func pinned() -> [Playlist] {
-        lock.withLock { playlists.filter(\.pinned) }
+        lock.withLock { Self.ordered(playlists.filter(\.pinned)) }
     }
 
     public func unpinned() -> [Playlist] {
-        lock.withLock { playlists.filter { !$0.pinned } }
+        lock.withLock { Self.ordered(playlists.filter { !$0.pinned }) }
     }
 
     /// The snapshot stations kept for radio and podcast members.

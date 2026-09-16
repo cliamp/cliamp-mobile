@@ -12,7 +12,7 @@ struct StationsScreen: View {
     let onOpenSettings: () -> Void
     let onOpenSearch: () -> Void
 
-    @State private var model = StationsModel()
+    private let model = StationsServices.shared.model
     @State private var filter: StationFilter = .all
     @State private var addingCustom = false
     @State private var customName = ""

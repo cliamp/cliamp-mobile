@@ -92,6 +92,11 @@ final class StationArtwork: @unchecked Sendable {
         if station.cover.hasPrefix("http") {
             return await download(station.cover, saveAs: station.id, target: target)
         }
+        // Companion folder art next to an indexed local file (DEC-02).
+        if station.cover.hasPrefix("file:"),
+           let url = URL(string: station.cover), url.isFileURL {
+            return Self.decodeFile(url, target: target)
+        }
         guard let url = await imageURL(for: station) else { return nil }
         if let image = await download(url, saveAs: station.id, target: target) {
             return image
@@ -100,6 +105,22 @@ final class StationArtwork: @unchecked Sendable {
         let favicon = station.favicon
         guard favicon.hasPrefix("http"), favicon != url else { return nil }
         return await download(favicon, saveAs: station.id, target: target)
+    }
+
+    /// Downscales a local image through ImageIO so a folder cover never
+    /// decodes at full size on the main thread.
+    private static func decodeFile(_ url: URL, target: CGFloat) -> UIImage? {
+        guard FileManager.default.fileExists(atPath: url.path),
+              let source = CGImageSourceCreateWithURL(url as CFURL, nil)
+        else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: max(target, target * 2),
+            kCGImageSourceCreateThumbnailWithTransform: true,
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        else { return nil }
+        return UIImage(cgImage: image)
     }
 
     private func imageURL(for station: Station) async -> String? {
