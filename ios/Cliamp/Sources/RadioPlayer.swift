@@ -46,6 +46,10 @@ final class RadioPlayer {
     private var streamURL: URL?
     /// Distinguishes newer plays from playlist resolutions that finish late.
     private var playGeneration = 0
+    private var resolveTask: Task<Void, Never>?
+    /// True while a playlist hop is in flight; the loaded item still belongs
+    /// to the previous selection until it completes.
+    private var resolving = false
 
     /// The latest 64-band FFT frame from the audio thread, empty when nothing
     /// is flowing. The meters read it; nothing else should.
@@ -86,15 +90,16 @@ final class RadioPlayer {
     private(set) var hasPrev = false
     private(set) var hasNext = false
 
-    /// A scrubber is only honest when there is a length to scrub through; a
-    /// live stream never offers one.
+    /// A scrubber is only honest when the loaded item has a finite length and
+    /// real seekable ranges; the source's origin does not decide it.
     var scrubbable: Bool {
-        seekable && durationMs > 0 && !(station?.isTrack != true)
+        seekable && durationMs > 0
     }
 
-    /// Whether the current source has no end (radio, HLS).
+    /// What the system should treat as a live stream: anything without a
+    /// finite, seekable end.
     var isLive: Bool {
-        station?.isTrack != true
+        !scrubbable
     }
 
     private init() {
@@ -157,20 +162,25 @@ final class RadioPlayer {
     /// buffering so the transport is honest about the wait.
     private func resolveStream(station: Station, url: URL, generation: Int) {
         buffering = true
-        Task { [weak self] in
+        resolving = true
+        resolveTask?.cancel()
+        resolveTask = Task { [weak self] in
             let resolved = await StreamResolver.resolve(url.absoluteString)
             guard !Task.isCancelled, let self, generation == self.playGeneration,
                   let target = URL(string: resolved)
             else { return }
+            self.resolving = false
             self.buffering = false
             self.streamURL = target
-            self.startStream(station: station, url: target)
+            self.startStream(station: station, url: target, generation: generation)
         }
     }
 
     /// Builds a fresh item for [station] and plays it: the one path that ever
     /// touches AVPlayer, used by explicit plays, navigation and reconnects.
-    private func startStream(station: Station, url: URL) {
+    /// [generation] keeps a stale item's callbacks from touching a newer
+    /// selection while a playlist hop is still in flight.
+    private func startStream(station: Station, url: URL, generation: Int) {
         icy.stop()
         spectrum.clear()
         // A replacement stream gets a fresh stall deadline; if the previous
@@ -200,14 +210,19 @@ final class RadioPlayer {
             let error = item.error as NSError?
             let identity = ObjectIdentifier(item)
             Task { @MainActor [weak self] in
-                guard let self, status == .failed, let error,
+                guard let self, generation == self.playGeneration,
                       let current = self.player.currentItem,
                       ObjectIdentifier(current) == identity
                 else { return }
-                self.errorLog.error(
-                    "item failed code=\(error.code, privacy: .public) domain=\(error.domain, privacy: .public) underlying=\(String(describing: error.userInfo[NSUnderlyingErrorKey]), privacy: .public)"
-                )
-                self.handleStreamFailure(error, message: message)
+                if status == .failed, let error {
+                    self.errorLog.error(
+                        "item failed code=\(error.code, privacy: .public) domain=\(error.domain, privacy: .public) underlying=\(String(describing: error.userInfo[NSUnderlyingErrorKey]), privacy: .public)"
+                    )
+                    self.handleStreamFailure(error, message: message)
+                } else {
+                    // Duration and seekable ranges arrive with readiness.
+                    self.refreshCapabilities()
+                }
             }
         }
         player.replaceCurrentItem(with: item)
@@ -218,11 +233,12 @@ final class RadioPlayer {
             if speed != 1 {
                 player.rate = Float(speed)
             }
-        }
-        icy.start(url: url) { [weak self] title in
-            Task { @MainActor [weak self] in
-                self?.streamTitle = title
-                self?.system?.refresh()
+            // The ICY reader is a second connection; it follows intent too.
+            icy.start(url: url) { [weak self] title in
+                Task { @MainActor [weak self] in
+                    self?.streamTitle = title
+                    self?.system?.refresh()
+                }
             }
         }
     }
@@ -256,7 +272,11 @@ final class RadioPlayer {
         let walk = currentWalk()
         guard !walk.isEmpty else { return }
         let ring = isRing(walk)
-        switch navigator.next(walk: walk, ring: ring, current: station, nowMs: nowMs()) {
+        // Redo only exists while walking the launch fallback; once a source
+        // owns navigation it is linear, exactly like Android.
+        switch navigator.next(
+            walk: walk, ring: ring, allowRedo: source.isEmpty, current: station, nowMs: nowMs()
+        ) {
         case .play(let target): commitNavigation(target, walk: walk)
         case .schedule: schedulePending()
         case .ignore: break
@@ -376,18 +396,26 @@ final class RadioPlayer {
         guard station != nil else { return }
         error = nil
         wantsToPlay = true
+        if resolving {
+            // A playlist hop is still in flight; its completion sees the
+            // restored intent and starts the new stream playing. The loaded
+            // item still belongs to the previous selection.
+            system?.refresh()
+            return
+        }
         if let current = player.currentItem, current.status != .failed {
             player.play()
             resumeMetadata()
         } else if let station, let url = streamURL ?? URL(string: station.url) {
             configureSessionIfNeeded()
-            startStream(station: station, url: url)
+            startStream(station: station, url: url, generation: playGeneration)
         }
         system?.refresh()
     }
 
     private func resumeMetadata() {
-        guard let station, let url = URL(string: station.url) else { return }
+        // The resolved URL, not the playlist link it came from.
+        guard let station, let url = streamURL ?? URL(string: station.url) else { return }
         icy.start(url: url) { [weak self] title in
             Task { @MainActor [weak self] in
                 self?.streamTitle = title
@@ -399,15 +427,27 @@ final class RadioPlayer {
     // MARK: seek and speed
 
     /// Seeks to an absolute position. Requests at or beyond the near-end
-    /// guard are ignored rather than clamped, matching Android.
+    /// guard are ignored rather than clamped, matching Android. On success
+    /// the published position follows immediately, so a paused scrub updates
+    /// the thumb and the lock screen.
     func seek(toPositionMs positionMs: Int64) {
         guard scrubbable, let item = player.currentItem else { return }
         guard SeekPolicy.canSeek(positionMs: positionMs, durationMs: durationMs) else { return }
+        let identity = ObjectIdentifier(item)
         item.seek(
             to: CMTime(value: CMTimeValue(positionMs), timescale: 1000),
             toleranceBefore: .zero,
             toleranceAfter: .zero,
-            completionHandler: nil
+            completionHandler: { [weak self] finished in
+                guard finished else { return }
+                Task { @MainActor [weak self] in
+                    guard let self, let current = self.player.currentItem,
+                          ObjectIdentifier(current) == identity
+                    else { return }
+                    self.syncPosition()
+                    self.system?.refresh()
+                }
+            }
         )
     }
 
@@ -438,10 +478,7 @@ final class RadioPlayer {
     private func apply(_ status: AVPlayer.TimeControlStatus) {
         buffering = status == .waitingToPlayAtSpecifiedRate
         playing = status == .playing
-        // Duration only exists once the source is ready; live radio stays at 0.
-        let seconds = player.currentItem.map { CMTimeGetSeconds($0.duration) } ?? 0
-        durationMs = seconds.isFinite && seconds > 0 ? Int64(seconds * 1000) : 0
-        seekable = durationMs > 0
+        refreshCapabilities()
         if buffering {
             if bufferingSinceMs == nil { bufferingSinceMs = nowMs() }
         } else {
@@ -478,7 +515,7 @@ final class RadioPlayer {
                 self.finishRecovery()
                 return
             }
-            self.startStream(station: station, url: url)
+            self.startStream(station: station, url: url, generation: self.playGeneration)
         }
     }
 
@@ -533,7 +570,7 @@ final class RadioPlayer {
         error = nil
         system?.refresh()
         guard let station, let url = streamURL ?? URL(string: station.url) else { return }
-        startStream(station: station, url: url)
+        startStream(station: station, url: url, generation: playGeneration)
     }
 
     private func cancelRecovery() {
@@ -550,21 +587,41 @@ final class RadioPlayer {
         reconnectAttempt = 0
     }
 
+    /// Reads what the loaded item can actually do. Duration and seekable
+    /// ranges only exist once a finite source is ready; live radio stays at 0.
+    private func refreshCapabilities() {
+        guard let item = player.currentItem else {
+            durationMs = 0
+            seekable = false
+            return
+        }
+        let seconds = CMTimeGetSeconds(item.duration)
+        durationMs = seconds.isFinite && seconds > 0 ? Int64(seconds * 1000) : 0
+        seekable = durationMs > 0 && !item.seekableTimeRanges.isEmpty
+    }
+
+    /// Publishes the player's clock and buffered depth to the UI.
+    private func syncPosition() {
+        guard let item = player.currentItem else { return }
+        let seconds = CMTimeGetSeconds(item.currentTime())
+        if seconds.isFinite, seconds >= 0 {
+            elapsedMs = Int64(seconds * 1000)
+        }
+        let ahead = item.loadedTimeRanges
+            .map { CMTimeGetSeconds($0.timeRangeValue.end) }
+            .max() ?? 0
+        if ahead.isFinite, seconds.isFinite {
+            bufferedSeconds = max(0, Int(ahead - seconds))
+        }
+    }
+
     private func updateTicker() {
         if playing, ticker == nil {
             let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    guard let self, let item = self.player.currentItem else { return }
-                    let seconds = CMTimeGetSeconds(item.currentTime())
-                    if seconds.isFinite, seconds >= 0 {
-                        self.elapsedMs = Int64(seconds * 1000)
-                    }
-                    let ahead = item.loadedTimeRanges
-                        .map { CMTimeGetSeconds($0.timeRangeValue.end) }
-                        .max() ?? 0
-                    if ahead.isFinite, seconds.isFinite {
-                        self.bufferedSeconds = max(0, Int(ahead - seconds))
-                    }
+                    guard let self else { return }
+                    self.syncPosition()
+                    self.refreshCapabilities()
                 }
             }
             RunLoop.main.add(timer, forMode: .common)

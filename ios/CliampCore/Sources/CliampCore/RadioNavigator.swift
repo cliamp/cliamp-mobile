@@ -43,13 +43,13 @@ public struct RadioNavigator: Sendable {
         }
     }
 
-    /// Next follows the redo tail first when walking the launch fallback, then
-    /// the ring. An explicit source is linear, exactly like Android's
-    /// `_source.isNotEmpty()` shortcut.
+    /// Next follows the redo tail first while walking the launch fallback,
+    /// then the ring. An explicit source is linear and never redoes, exactly
+    /// like Android's `_source.isNotEmpty()` shortcut.
     public mutating func next(
-        walk: [Station], ring: Bool, current: Station?, nowMs: Int64
+        walk: [Station], ring: Bool, allowRedo: Bool, current: Station?, nowMs: Int64
     ) -> RadioNavDecision {
-        if ring, canGoForward {
+        if allowRedo, ring, canGoForward {
             pastIndex += 1
             cancelPending()
             return .play(past[pastIndex])

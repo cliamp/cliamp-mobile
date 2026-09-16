@@ -28,7 +28,7 @@ public struct MarqueeText: View {
                 .offset(x: offset)
                 .frame(width: proxy.size.width, alignment: .leading)
                 .clipped()
-                .task(id: overflow) {
+                .task(id: "\(text)|\(Int(overflow))") {
                     withAnimation(.linear(duration: 0)) { offset = 0 }
                     guard overflow > 1 else { return }
                     try? await Task.sleep(for: .milliseconds(1200))

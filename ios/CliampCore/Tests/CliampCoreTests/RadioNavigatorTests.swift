@@ -19,38 +19,38 @@ struct RadioNavigatorTests {
     @Test("next steps forward and prev wraps the ring backwards")
     func ringWrap() {
         var navigator = RadioNavigator()
-        #expect(name(navigator.next(walk: ring, ring: true, current: a, nowMs: 0)) == "B")
+        #expect(name(navigator.next(walk: ring, ring: true, allowRedo: true, current: a, nowMs: 0)) == "B")
         #expect(name(navigator.previous(walk: ring, ring: true, current: a, nowMs: 300)) == "C")
     }
 
     @Test("a single-item ring has nowhere to go")
     func singleItem() {
         var navigator = RadioNavigator()
-        #expect(navigator.next(walk: [a], ring: true, current: a, nowMs: 0) == .ignore)
+        #expect(navigator.next(walk: [a], ring: true, allowRedo: true, current: a, nowMs: 0) == .ignore)
         #expect(navigator.previous(walk: [a], ring: true, current: a, nowMs: 100) == .ignore)
-        #expect(navigator.next(walk: [], ring: false, current: nil, nowMs: 200) == .ignore)
+        #expect(navigator.next(walk: [], ring: false, allowRedo: false, current: nil, nowMs: 200) == .ignore)
     }
 
     @Test("a burst coalesces on the last tap and a later tap applies at once")
     func burstDebounce() {
         var navigator = RadioNavigator()
         // Isolated tap: applies immediately, so next feels instant.
-        #expect(name(navigator.next(walk: ring, ring: true, current: a, nowMs: 0)) == "B")
+        #expect(name(navigator.next(walk: ring, ring: true, allowRedo: true, current: a, nowMs: 0)) == "B")
         // Follow-ups inside 180 ms only update the pending target.
-        #expect(navigator.next(walk: ring, ring: true, current: b, nowMs: 50) == .schedule)
-        #expect(navigator.next(walk: ring, ring: true, current: b, nowMs: 120) == .schedule)
+        #expect(navigator.next(walk: ring, ring: true, allowRedo: true, current: b, nowMs: 50) == .schedule)
+        #expect(navigator.next(walk: ring, ring: true, allowRedo: true, current: b, nowMs: 120) == .schedule)
         #expect(navigator.takePending(walk: ring)?.name == "A")
         #expect(navigator.takePending(walk: ring) == nil)
         // Past the window a tap is leading-edge again.
-        #expect(name(navigator.next(walk: ring, ring: true, current: a, nowMs: 400)) == "B")
+        #expect(name(navigator.next(walk: ring, ring: true, allowRedo: true, current: a, nowMs: 400)) == "B")
     }
 
     @Test("an explicit source is linear, not a ring")
     func linearSource() {
         var navigator = RadioNavigator()
-        #expect(name(navigator.next(walk: ring, ring: false, current: b, nowMs: 0)) == "C")
+        #expect(name(navigator.next(walk: ring, ring: false, allowRedo: false, current: b, nowMs: 0)) == "C")
         // At the end of a linear list there is nowhere to go.
-        #expect(navigator.next(walk: ring, ring: false, current: c, nowMs: 300) == .ignore)
+        #expect(navigator.next(walk: ring, ring: false, allowRedo: false, current: c, nowMs: 300) == .ignore)
         #expect(navigator.previous(walk: ring, ring: false, current: a, nowMs: 600) == .ignore)
         #expect(name(navigator.previous(walk: ring, ring: false, current: b, nowMs: 900)) == "A")
     }
@@ -67,12 +67,30 @@ struct RadioNavigatorTests {
         #expect(name(navigator.previous(walk: ring, ring: true, current: b, nowMs: 0)) == "A")
         navigator.recordPlay(a)
         // Next redoes what was stepped back rather than restarting the ring.
-        #expect(name(navigator.next(walk: ring, ring: true, current: a, nowMs: 0)) == "B")
+        #expect(name(navigator.next(walk: ring, ring: true, allowRedo: true, current: a, nowMs: 0)) == "B")
         navigator.recordPlay(b)
-        #expect(name(navigator.next(walk: ring, ring: true, current: b, nowMs: 0)) == "C")
+        #expect(name(navigator.next(walk: ring, ring: true, allowRedo: true, current: b, nowMs: 0)) == "C")
         navigator.recordPlay(c)
         // At the top of the log the ring takes over again.
-        #expect(name(navigator.next(walk: ring, ring: true, current: c, nowMs: 0)) == "A")
+        #expect(name(navigator.next(walk: ring, ring: true, allowRedo: true, current: c, nowMs: 0)) == "A")
+    }
+
+    @Test("a promoted source advances linearly, not through the redo tail")
+    func promotedSourceIgnoresRedo() {
+        var navigator = RadioNavigator()
+        let d = Station(id: "d", name: "D", url: "https://d.example/stream", source: .directory)
+        // A burst from A settles on D: the first tap applies, the rest coalesce.
+        #expect(name(navigator.next(walk: ring, ring: true, allowRedo: true, current: a, nowMs: 0)) == "B")
+        navigator.recordPlay(b)
+        #expect(navigator.next(walk: ring, ring: true, allowRedo: true, current: b, nowMs: 50) == .schedule)
+        let walk = [a, b, c, d]
+        #expect(navigator.next(walk: walk, ring: true, allowRedo: true, current: b, nowMs: 90) == .schedule)
+        #expect(navigator.takePending(walk: walk)?.name == "D")
+        navigator.recordPlay(d)
+        // Previous lands on B; the promoted (frozen) source moves on to C.
+        #expect(name(navigator.previous(walk: walk, ring: true, current: d, nowMs: 400)) == "B")
+        navigator.recordPlay(b)
+        #expect(name(navigator.next(walk: walk, ring: true, allowRedo: false, current: b, nowMs: 800)) == "C")
     }
 
     @Test("prev at the bottom of the log wraps the ring")
@@ -92,7 +110,7 @@ struct RadioNavigatorTests {
         #expect(name(navigator.previous(walk: ring, ring: true, current: b, nowMs: 0)) == "A")
         navigator.recordPlay(c)
         #expect(!navigator.canGoForward)
-        #expect(name(navigator.next(walk: ring, ring: true, current: c, nowMs: 200)) == "A")
+        #expect(name(navigator.next(walk: ring, ring: true, allowRedo: true, current: c, nowMs: 200)) == "A")
     }
 
     @Test("the session log is capped at 100")
