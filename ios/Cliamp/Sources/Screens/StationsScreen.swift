@@ -10,6 +10,7 @@ struct StationsScreen: View {
     let player: RadioPlayer
     let app: AppState
     let onOpenSettings: () -> Void
+    let onOpenSearch: () -> Void
 
     @State private var model = StationsModel()
     @State private var filter: StationFilter = .all
@@ -28,7 +29,7 @@ struct StationsScreen: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            CliampHeader("Stations", onSettings: onOpenSettings) {
+            CliampHeader("Stations", onSearch: onOpenSearch, onSettings: onOpenSettings) {
                 chips
             }
             ScrollView {

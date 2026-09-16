@@ -11,11 +11,10 @@ struct PodcastsScreen: View {
     let podcasts: PodcastsModel
     let downloads: DownloadManager
     let onOpenSettings: () -> Void
+    let onOpenSearch: () -> Void
     let onOpenShow: (PodcastShow) -> Void
 
     @State private var pane: Pane = .all
-    @State private var searchText = ""
-    @FocusState private var searchFocused: Bool
 
     enum Pane: String, CaseIterable, Identifiable {
         case all
@@ -27,20 +26,15 @@ struct PodcastsScreen: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            CliampHeader("Podcasts", onSearch: {
-                // The header key is the global search's doorway on Android;
-                // until that screen lands it opens the directory's field.
-                pane = .directory
-                searchFocused = true
-            }, onSettings: onOpenSettings) {
+            CliampHeader("Podcasts", onSearch: onOpenSearch, onSettings: onOpenSettings) {
                 chips
             }
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    if pane == .all || pane == .subscribed {
+                    if pane == .subscribed {
                         subscribedSection
                     }
-                    if pane == .all || pane == .directory {
+                    if pane != .subscribed {
                         directorySection
                     }
                     Spacer().frame(height: 20)
@@ -152,13 +146,10 @@ struct PodcastsScreen: View {
             }
         }
         directoryFilters
-        searchField
         if podcasts.shows.isEmpty, podcasts.loading {
             EmptyNote("loading…")
-        } else if app.podcastDirectoryGrid {
-            directoryGrid
         } else {
-            directoryRows
+            directoryGridOrRows
         }
         directoryFooter
     }
@@ -188,48 +179,13 @@ struct PodcastsScreen: View {
         return false
     }
 
-    private var currentCountryCode: String {
-        podcasts.country
-    }
-
-    private var searchField: some View {
-        HStack(spacing: 8) {
-            CliampIcon(CliampIcons.search, size: 15, tint: palette.inkTertiary)
-            TextField("search shows", text: $searchText)
-                .cliampText(CliampType.rowPrimary)
-                .foregroundStyle(palette.ink)
-                .textFieldStyle(.plain)
-                .focused($searchFocused)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-                .submitLabel(.search)
-                .onSubmit(runSearch)
-            if !searchText.isEmpty {
-                CliampIcon(CliampIcons.xmark, size: 12, tint: palette.inkTertiary)
-                    .frame(width: 28, height: 28)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        searchText = ""
-                        podcasts.load(.top(country: podcasts.country), reset: true)
-                    }
-            }
+    @ViewBuilder
+    private var directoryGridOrRows: some View {
+        if app.podcastDirectoryGrid {
+            directoryGrid
+        } else {
+            directoryRows
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(palette.panel)
-        .clipShape(RoundedRectangle(cornerRadius: CliampShape.small))
-        .overlay(
-            RoundedRectangle(cornerRadius: CliampShape.small)
-                .stroke(palette.chipBorder, lineWidth: 1)
-        )
-        .padding(.horizontal, cliampGutter)
-        .padding(.vertical, 4)
-    }
-
-    private func runSearch() {
-        let text = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        podcasts.load(.search(text), reset: true)
     }
 
     private var directoryGrid: some View {

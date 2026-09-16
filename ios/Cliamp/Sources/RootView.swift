@@ -11,6 +11,7 @@ struct RootView: View {
     @State private var showSettings = false
     @State private var showPlayer = false
     @State private var podcastPath: [PodcastShow] = []
+    @State private var showSearch = false
 
     var body: some View {
         let palette = cliampPalette(for: app.palettePreference, systemDark: systemScheme == .dark)
@@ -20,7 +21,8 @@ struct RootView: View {
             app: app,
             onOpenSettings: { showSettings = true },
             onOpenPlayer: { showPlayer = true },
-            podcastPath: $podcastPath
+            podcastPath: $podcastPath,
+            showSearch: $showSearch
         )
         .cliampTheme(palette)
         .environment(\.cliampHapticsEnabled, app.haptics)
@@ -55,6 +57,7 @@ struct RootView: View {
             player.downloadLookup = { [downloads = services.downloads] url in
                 downloads.localPath(url: url)
             }
+            services.search.favoritesProvider = { [app] in app.favorites }
             // Android restores the last station to the bus but never plays it
             // unless auto-resume is on: a radio app that starts making noise
             // on launch is a bad neighbour (RAD-12).
@@ -87,6 +90,9 @@ struct RootView: View {
             }
             if arguments.contains("-cliamp-preview-pods") {
                 tab = .pods
+            }
+            if arguments.contains("-cliamp-preview-search") {
+                showSearch = true
             }
             if let index = arguments.firstIndex(of: "-cliamp-preview-podcast"),
                index + 1 < arguments.count

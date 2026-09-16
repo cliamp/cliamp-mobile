@@ -10,15 +10,29 @@ struct PodcastShowScreen: View {
     let podcasts: PodcastsModel
     let downloads: DownloadManager
     let show: PodcastShow
+    let onOpenSearch: () -> Void
+    let onOpenSettings: () -> Void
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(spacing: 0) {
-            topRow
+            CliampHeader(
+                "Podcast",
+                onBack: { dismiss() },
+                onSearch: onOpenSearch,
+                onSettings: onOpenSettings
+            ) {
+                EmptyView()
+            }
             ScrollView {
                 LazyVStack(spacing: 0) {
                     header
-                    SectionLabel("episodes — \(podcasts.episodes.count)") { EmptyView() }
+                    SectionLabel("episodes — \(podcasts.episodes.count)") {
+                        Text("refresh")
+                            .cliampText(CliampType.meta)
+                            .foregroundStyle(palette.inkTertiary)
+                            .microPress { podcasts.refreshShow() }
+                    }
                     episodesSection
                     Spacer().frame(height: 20)
                 }
@@ -28,58 +42,62 @@ struct PodcastShowScreen: View {
         .task { podcasts.openShow(show) }
     }
 
-    private var topRow: some View {
-        HStack(spacing: 8) {
-            BackChevron { dismiss() }
-            Spacer()
-            CliampIcon(CliampIcons.download, size: 16, tint: palette.inkSecondary)
-                .frame(width: 32, height: 32)
-                .opacity(0)
-            CliampIcon(CliampIcons.lines, size: 16, tint: palette.accent)
-                .frame(width: 32, height: 32)
-                .microPress { podcasts.refreshShow() }
-                .accessibilityLabel("refresh feed")
-            SubscribeStar(
-                subscribed: podcasts.isSubscribed(feedUrl: show.feedUrl)
-            ) {
-                podcasts.toggleSubscription(show)
-            }
-        }
-        .padding(.horizontal, cliampGutter)
-        .frame(height: 48)
-    }
-
     private var currentShow: PodcastShow {
         podcasts.show ?? show
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: 14) {
                 StationArtSquare(station: currentShow.artStation)
-                    .frame(width: 110, height: 110)
-                VStack(alignment: .leading, spacing: 6) {
+                    .frame(width: 140, height: 140)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: CliampShape.small)
+                            .stroke(palette.frameBorder, lineWidth: 1)
+                    )
+                VStack(alignment: .leading, spacing: 5) {
                     Text(currentShow.title)
-                        .cliampText(CliampType.trackTitleSmall)
+                        .cliampText(CliampType.rowPrimaryMedium)
                         .foregroundStyle(palette.ink)
-                        .lineLimit(3)
-                    Text(currentShow.meta.isEmpty ? "podcast" : currentShow.meta)
-                        .cliampText(CliampType.rowSecondary)
-                        .foregroundStyle(palette.inkTertiary)
                         .lineLimit(2)
+                    if !currentShow.author.isEmpty {
+                        Text(currentShow.author)
+                            .cliampText(CliampType.rowSecondary)
+                            .foregroundStyle(palette.inkSecondary)
+                            .lineLimit(1)
+                    }
+                    if !currentShow.meta.isEmpty {
+                        Text(currentShow.meta)
+                            .cliampText(CliampType.meta)
+                            .foregroundStyle(palette.inkTertiary)
+                            .lineLimit(1)
+                    }
+                    Spacer().frame(height: 3)
+                    Chip(
+                        subscribed ? "subscribed" : "subscribe",
+                        selected: subscribed
+                    ) {
+                        podcasts.toggleSubscription(currentShow)
+                    }
                 }
                 Spacer(minLength: 0)
             }
-            if !currentShow.description.isEmpty, currentShow.description != currentShow.title {
+            .padding(.horizontal, cliampGutter)
+            .padding(.vertical, 14)
+            if !currentShow.description.isEmpty {
                 Text(currentShow.description)
                     .cliampText(CliampType.rowSecondary)
-                    .foregroundStyle(palette.inkSecondary)
-                    .lineLimit(3)
+                    .foregroundStyle(palette.inkTertiary)
+                    .lineLimit(4)
+                    .padding(.horizontal, cliampGutter)
+                    .padding(.bottom, 14)
             }
+            HairlineDivider()
         }
-        .padding(.horizontal, cliampGutter)
-        .padding(.top, 4)
-        .padding(.bottom, 12)
+    }
+
+    private var subscribed: Bool {
+        podcasts.isSubscribed(feedUrl: currentShow.feedUrl)
     }
 
     @ViewBuilder

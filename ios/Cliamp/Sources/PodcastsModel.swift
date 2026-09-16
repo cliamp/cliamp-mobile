@@ -358,6 +358,7 @@ final class PodcastServices {
     let store: PodcastStore
     let podcasts: PodcastsModel
     let downloads: DownloadManager
+    let search: SearchModel
 
     private init() {
         store = .applicationDefault()
@@ -365,6 +366,7 @@ final class PodcastServices {
         downloads = DownloadManager(store: store, allowsCellular: {
             UserDefaults.standard.object(forKey: "cellular") as? Bool ?? true
         })
+        search = SearchModel(podcasts: podcasts)
         podcasts.downloads = downloads
     }
 }

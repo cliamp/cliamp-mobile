@@ -13,6 +13,7 @@ struct MainShell: View {
     let onOpenSettings: () -> Void
     let onOpenPlayer: () -> Void
     @Binding var podcastPath: [PodcastShow]
+    @Binding var showSearch: Bool
 
     var body: some View {
         GeometryReader { proxy in
@@ -38,34 +39,56 @@ struct MainShell: View {
 
     @ViewBuilder
     private var content: some View {
-        switch tab {
-        case .stations:
-            StationsScreen(player: player, app: app, onOpenSettings: onOpenSettings)
-        case .pods:
-            // A detail screen stays inside the shell, the way Android keeps
-            // the mini player and tab bar under every pushed route.
-            NavigationStack(path: $podcastPath) {
-                PodcastsScreen(
-                    player: player,
-                    app: app,
-                    podcasts: PodcastServices.shared.podcasts,
-                    downloads: PodcastServices.shared.downloads,
+        if showSearch {
+            // The finder is a page over the permanent chrome, like Android's
+            // Search destination: mini player and tab bar stay visible.
+            SearchScreen(
+                model: PodcastServices.shared.search,
+                player: player,
+                onBack: { showSearch = false },
+                onOpenShow: { show in
+                    showSearch = false
+                    tab = .pods
+                    podcastPath.append(show)
+                }
+            )
+        } else {
+            switch tab {
+            case .stations:
+                StationsScreen(
+                    player: player, app: app,
                     onOpenSettings: onOpenSettings,
-                    onOpenShow: { podcastPath.append($0) }
+                    onOpenSearch: { showSearch = true }
                 )
-                .toolbar(.hidden, for: .navigationBar)
-                .navigationDestination(for: PodcastShow.self) { show in
-                    PodcastShowScreen(
+            case .pods:
+                // A detail screen stays inside the shell, the way Android keeps
+                // the mini player and tab bar under every pushed route.
+                NavigationStack(path: $podcastPath) {
+                    PodcastsScreen(
                         player: player,
+                        app: app,
                         podcasts: PodcastServices.shared.podcasts,
                         downloads: PodcastServices.shared.downloads,
-                        show: show
+                        onOpenSettings: onOpenSettings,
+                        onOpenSearch: { showSearch = true },
+                        onOpenShow: { podcastPath.append($0) }
                     )
                     .toolbar(.hidden, for: .navigationBar)
+                    .navigationDestination(for: PodcastShow.self) { show in
+                        PodcastShowScreen(
+                            player: player,
+                            podcasts: PodcastServices.shared.podcasts,
+                            downloads: PodcastServices.shared.downloads,
+                            show: show,
+                            onOpenSearch: { showSearch = true },
+                            onOpenSettings: onOpenSettings
+                        )
+                        .toolbar(.hidden, for: .navigationBar)
+                    }
                 }
-            }
-        case .library:
-            PlaceholderTab(title: "Library")
+            case .library:
+                PlaceholderTab(title: "Library")
+                }
         }
     }
 
