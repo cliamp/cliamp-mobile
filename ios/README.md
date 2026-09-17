@@ -1,9 +1,24 @@
 # cliamp ios
 
-The iOS client is not implemented yet. The [iOS parity plan and progress
-tracker](../docs/ios-parity.md) defines the Android baseline, phased work,
-acceptance criteria, and remaining platform decisions. Start there when
-implementing or reviewing the port, and update its task IDs as work lands.
+A native iOS client for cliamp, ported from the Android app: Swift 6 + SwiftUI,
+iOS 18 minimum, universal iPhone/iPad, one XcodeGen project with two local
+Swift packages (`CliampCore` product logic and tests, `CliampDesign` tokens and
+components) and an unsigned simulator CI job.
+
+Implemented so far: the full radio experience (live streams, retry/reconnect,
+background and lock-screen playback, artwork branding, last station/favourites/
+history), the podcast stack (iTunes directory, feeds, subscriptions, resume,
+downloads with offline playback, auto-download opt-in), the Library tab
+(managed-folder local library, smart lists, playlists, downloads) and the first
+server provider, SSH/SFTP (Keychain credentials, pinned host keys, indexed
+library, streaming with seek, embedded cover art). Settings, search and the
+player surfaces are in place; the remaining work, evidence and platform
+decisions live in the [iOS parity plan and progress
+tracker](../docs/ios-parity.md). Start there when implementing or reviewing the
+port, and update its task IDs as work lands.
+
+Behaviour is ported against the Android source as the reference (never edited
+from an iOS task) and `../docs/design.md` as the design source of truth.
 
 Two things worth reading before anything lands here:
 [`../docs/design.md`](../docs/design.md), which is the design system the Android
@@ -72,6 +87,22 @@ colour from the same catalog.
 
 `project.yml` is the only project source; regenerate after changing targets,
 settings, or `Info.plist` keys instead of editing the generated project.
+
+### Live SFTP tests
+
+The provider tests run against a real server only when asked, so the default
+suite stays hermetic. A small asyncssh fixture serves the repository files on
+loopback:
+
+```sh
+CLIAMP_SFTP_LIVE=1 swift test --package-path CliampCore --filter SftpLiveTests
+```
+
+Point the same suite at any server with `CLIAMP_SFTP_HOST`, `CLIAMP_SFTP_PORT`,
+`CLIAMP_SFTP_USER`, `CLIAMP_SFTP_PASSWORD`, `CLIAMP_SFTP_ROOT` and
+`CLIAMP_SFTP_KEYS=0` (when the server has no test key); the assertions adapt to
+the layout. `CLIAMP_ART_FILE=/path/to/track.mp3` runs the embedded-artwork
+extraction against a single real file.
 
 ## Layout
 
