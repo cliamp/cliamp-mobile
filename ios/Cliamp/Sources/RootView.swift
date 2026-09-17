@@ -129,9 +129,17 @@ struct RootView: View {
                         ]
                     )
                     if arguments.contains("-cliamp-preview-provider-play"), let account {
+                        let wanted = arguments.firstIndex(of: "-cliamp-preview-play-title")
+                            .flatMap { index in
+                                index + 1 < arguments.count ? arguments[index + 1] : nil
+                            }
                         Task {
                             await providers.rescan(account)
-                            if let track = providers.tracks(accountId: account.id).first {
+                            let tracks = providers.tracks(accountId: account.id)
+                            let track = wanted.flatMap { needle in
+                                tracks.first { $0.title.localizedCaseInsensitiveContains(needle) }
+                            } ?? tracks.first
+                            if let track {
                                 player.play(track.station)
                                 showPlayer = true
                             }

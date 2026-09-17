@@ -43,7 +43,10 @@ struct NowPlayingScreen: View {
     private func portrait(proxy: GeometryProxy) -> some View {
         let artSide = min(proxy.size.width - cliampGutter * 2, 340)
         return VStack(spacing: 0) {
-            headerRow
+            // Match Android's portrait header: full-width row inset by the
+            // page gutter, so the back key and the queue chip keep the same
+            // margin as every other screen's chrome.
+            headerRow.padding(.horizontal, cliampGutter)
             VStack(spacing: 0) {
                 Spacer(minLength: 8)
                 art(side: artSide)

@@ -130,7 +130,7 @@ struct StationArtPlate: View {
         .frame(width: side, height: side)
         .onAppear { breathing = true }
         .task(id: station?.id) {
-            image = nil
+            setImage(nil)
             guard let station else { return }
             let loaded: UIImage?
             if let cached = StationArtwork.shared.cached(for: station) {
@@ -139,7 +139,7 @@ struct StationArtPlate: View {
                 loaded = await StationArtwork.shared.image(for: station)
             }
             guard !Task.isCancelled else { return }
-            image = loaded
+            setImage(loaded)
         }
     }
 
@@ -159,6 +159,17 @@ struct StationArtPlate: View {
         } else if station != nil {
             CliampIcon(CliampIcons.stationsTab, size: side * 0.28, tint: palette.accent)
         }
+    }
+
+    /// The plate's slow breathing animation repeats forever, and SwiftUI
+    /// hands that animation to any later change in the same subtree — the
+    /// artwork swap would then cross-fade in over seven seconds. Swapping
+    /// inside a transaction with animations disabled keeps the plate
+    /// breathing and the art appearing all at once.
+    private func setImage(_ loaded: UIImage?) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { image = loaded }
     }
 
     private static func isSquarish(_ image: UIImage) -> Bool {
