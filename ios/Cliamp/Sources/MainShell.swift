@@ -37,6 +37,10 @@ struct MainShell: View {
                     MiniPlayerBar(player: player, app: app, onOpen: onOpenPlayer)
                     CliampTabBar(current: tab, onSelect: select, bottomInset: bottomInset)
                 }
+                // The bar paints to the screen edge the way Android's does,
+                // with its own padding clearing the home indicator. Ignoring
+                // only the container region keeps keyboard insets working.
+                .ignoresSafeArea(.container, edges: .bottom)
             }
         }
         #if DEBUG

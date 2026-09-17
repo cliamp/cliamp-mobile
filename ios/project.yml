@@ -86,8 +86,9 @@ targets:
       - path: Cliamp/Tests
     dependencies:
       - target: Cliamp
-      - package: CliampCore
-      - package: CliampDesign
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: stream.cliamp.mobile.tests
+        # The Swift package products (Citadel → Crypto) are framework
+        # bundles, so the hosted test bundle needs an Info.plist too.
+        GENERATE_INFOPLIST_FILE: YES
