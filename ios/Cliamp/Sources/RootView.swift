@@ -142,6 +142,15 @@ struct RootView: View {
                             if let track {
                                 player.play(track.station)
                                 showPlayer = true
+                                // Optional scrub check: jump mid-track once
+                                // the item is playing, exercising the same
+                                // call the scrubber makes on release.
+                                if let index = arguments.firstIndex(of: "-cliamp-preview-seek"),
+                                   index + 1 < arguments.count,
+                                   let fraction = Double(arguments[index + 1]) {
+                                    try? await Task.sleep(for: .seconds(4))
+                                    player.seek(toFraction: fraction)
+                                }
                             }
                         }
                     }

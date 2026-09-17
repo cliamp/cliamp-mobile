@@ -218,10 +218,9 @@ struct NowPlayingScreen: View {
             // What the transport shows follows what the source can do: a
             // finite, seekable item scrubs; ICY radio streams.
             if player.scrubbable, player.error == nil, !player.reconnecting {
-                MechSlider(
-                    value: player.durationMs > 0
-                        ? Double(player.elapsedMs) / Double(player.durationMs) : 0,
-                    range: 0...1
+                Scrubber(
+                    fraction: player.durationMs > 0
+                        ? Double(player.elapsedMs) / Double(player.durationMs) : 0
                 ) { fraction in
                     player.seek(toFraction: fraction)
                 }

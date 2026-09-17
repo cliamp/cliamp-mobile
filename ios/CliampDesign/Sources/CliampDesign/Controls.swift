@@ -187,6 +187,75 @@ public struct MechSlider: View {
     }
 }
 
+/// The playback timeline, ported from Android's `Scrubber`: a 4-point track
+/// with a 3-point playhead, and a small key thumb that only appears while a
+/// finger is down so a drag reads as grabbing the timeline. A tap seeks where
+/// it landed; a drag follows the finger and commits on release.
+///
+/// The position shown while dragging is local — the player's own clock lags
+/// the gesture (and over SFTP a seek is a round trip), so following it would
+/// make the playhead stutter backwards under the finger.
+public struct Scrubber: View {
+    @Environment(\.cliampPalette) private var palette
+    private let fraction: Double
+    private let onSeek: (Double) -> Void
+
+    @State private var dragging = false
+    @State private var dragFraction: Double = 0
+
+    public init(fraction: Double, onSeek: @escaping (Double) -> Void) {
+        self.fraction = fraction
+        self.onSeek = onSeek
+    }
+
+    public var body: some View {
+        GeometryReader { proxy in
+            let width = max(1, proxy.size.width)
+            let shown = min(max(dragging ? dragFraction : fraction, 0), 1)
+            ZStack(alignment: .leading) {
+                Rectangle()
+                    .fill(palette.track)
+                    .frame(height: 4)
+                    .frame(maxHeight: .infinity, alignment: .center)
+                Rectangle()
+                    .fill(palette.accent)
+                    .frame(width: width * shown, height: 4)
+                    .frame(maxHeight: .infinity, alignment: .center)
+                Rectangle()
+                    .fill(palette.peak)
+                    .frame(width: 3)
+                    .offset(x: min(max(width * shown - 1.5, 0), width - 3))
+                if dragging {
+                    RoundedRectangle(cornerRadius: CliampShape.tiny)
+                        .fill(palette.keyFace)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: CliampShape.tiny)
+                                .stroke(palette.keyBorder, lineWidth: 1)
+                        )
+                        .frame(width: 10)
+                        .offset(x: min(max(width * shown - 5, 0), width - 10))
+                }
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { drag in
+                        dragging = true
+                        dragFraction = min(max(drag.location.x / width, 0), 1)
+                    }
+                    .onEnded { _ in
+                        dragging = false
+                        onSeek(min(max(dragFraction, 0), 1))
+                    }
+            )
+        }
+        .frame(height: 24)
+        .accessibilityElement()
+        .accessibilityLabel("playback position")
+        .accessibilityValue("\(Int(min(max(fraction, 0), 1) * 100))%")
+    }
+}
+
 /// A key with real mechanical travel: dark gets a recessed bevel, light gets a
 /// drop shelf, and pressing collapses the travel either way.
 public struct MechKey<Content: View>: View {
