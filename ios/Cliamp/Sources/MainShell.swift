@@ -19,10 +19,15 @@ struct MainShell: View {
     @State private var libraryPath: [LibraryDestination] = []
     private let providers = ProviderServices.shared.model
 
+    /// The home-indicator inset on its own. `safeAreaInsets` inside the
+    /// shell includes the keyboard while it is up, and padding the tab bar by
+    /// that squeezes whatever form is focused down to nothing.
+    @State private var containerBottomInset: CGFloat = 0
+
     var body: some View {
         GeometryReader { proxy in
             let rail = proxy.size.width > proxy.size.height
-            let bottomInset = proxy.safeAreaInsets.bottom
+            let bottomInset = containerBottomInset
             if rail {
                 HStack(spacing: 0) {
                     VStack(spacing: 0) {
@@ -43,6 +48,15 @@ struct MainShell: View {
                 .ignoresSafeArea(.container, edges: .bottom)
             }
         }
+        .background(
+            GeometryReader { proxy in
+                let inset = proxy.safeAreaInsets.bottom
+                Color.clear
+                    .onAppear { containerBottomInset = inset }
+                    .onChange(of: inset) { _, value in containerBottomInset = value }
+            }
+            .ignoresSafeArea(.keyboard, edges: .bottom)
+        )
         #if DEBUG
         .onAppear {
             // Screenshot hooks; never compiled into release builds.

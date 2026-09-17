@@ -17,6 +17,7 @@ struct ProviderWizardScreen: View {
     @State private var identity: ProviderIdentity?
     @State private var error: String?
     @State private var testing = false
+    @FocusState private var focused: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -54,7 +55,15 @@ struct ProviderWizardScreen: View {
             }
         }
         .background(palette.ground)
-        .onAppear(perform: seed)
+        .onAppear {
+            seed()
+            #if DEBUG
+            // Screenshot hook: reproduce the keyboard-up form state.
+            if ProcessInfo.processInfo.arguments.contains("-cliamp-preview-focus-host") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { focused = "host" }
+            }
+            #endif
+        }
     }
 
     // MARK: fields
@@ -68,9 +77,11 @@ struct ProviderWizardScreen: View {
             Group {
                 if field.secret {
                     SecureField(field.label.lowercased(), text: binding(field.key))
+                        .focused($focused, equals: field.key)
                 } else {
                     TextField(field.label.lowercased(), text: binding(field.key), axis: .vertical)
                         .lineLimit(field.lines, reservesSpace: field.lines > 1)
+                        .focused($focused, equals: field.key)
                 }
             }
             .cliampText(CliampType.rowPrimary)
